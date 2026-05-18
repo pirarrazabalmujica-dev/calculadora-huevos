@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime
-from io import StringIO
+from io import StringIO, BytesIO
 import streamlit.components.v1 as components
 import re, os
 
@@ -181,8 +181,12 @@ def scrape_argentina():
 
 @st.cache_data(ttl=43200)
 def scrape_chile():
-    urls=["https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/9f885df4-afeb-4b75-8bab-9334f79db00f/download/precio_consumidor_2026.csv",
-          "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/eab239c4-e338-4cde-a9e0-7c4f27826030/download/precio_consumidor_2025.csv"]
+    urls=[
+        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/9f885df4-afeb-4b75-8bab-9334f79db00f/download/precio_consumidor_2026.csv",
+        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/eab239c4-e338-4cde-a9e0-7c4f27826030/download/precio_consumidor_2025.csv",
+        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/6b9f6b1e-9c1e-4b2a-8f3d-1a2b3c4d5e6f/download/precio_consumidor_2024.csv",
+        "https://www.odepa.gob.cl/wp-content/uploads/2025/01/precio_consumidor_2024.csv",
+    ]
     df_all=[]
     for url in urls:
         try:
@@ -229,6 +233,21 @@ LAYOUT=dict(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
 
 BR_COLORS={"SP":"#f97316","PR":"#fb923c","GO":"#fcd34d","AM":"#fdba74","DF":"#fed7aa","RO":"#fde68a","RS":"#f59e0b","MG":"#d97706"}
 AR_COLORS={"BA_blanco":"#60a5fa","BA_color":"#93c5fd","SF_blanco":"#a78bfa","ER_blanco":"#c4b5fd"}
+
+def make_excel(df_br,df_ar,df_cl,df_us):
+    buf=BytesIO()
+    with pd.ExcelWriter(buf,engine="openpyxl") as w:
+        if df_br is not None:
+            br_num=[c for c in df_br.columns if c not in ["mes","fecha"]]
+            out=df_br[["mes"]+br_num].copy(); out["Promedio"]=df_br[br_num].mean(axis=1).round(4)
+            out.to_excel(w,sheet_name="Brasil_BRL_huevo",index=False)
+        if df_ar is not None:
+            out=df_ar[["mes","BA_blanco","BA_color","SF_blanco","ER_blanco"]].copy()
+            out.columns=["mes","BA Blanco","BA Color","SF Blanco","ER Blanco"]
+            out.to_excel(w,sheet_name="Argentina_ARS_huevo",index=False)
+        if df_cl is not None: df_cl[["mes","precio_clp"]].to_excel(w,sheet_name="Chile_CLP_huevo",index=False)
+        if df_us is not None: df_us[["mes","precio_usd"]].to_excel(w,sheet_name="USA_USD_huevo",index=False)
+    return buf.getvalue()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN: MENÚ PRINCIPAL
@@ -327,9 +346,7 @@ def render_precios():
             return v*r.get(tipo,1)
 
         st.markdown("---")
-        st.markdown("**🇧🇷 Estados Brasil**")
         br_cols=[c for c in (df_br.columns if df_br is not None else []) if c not in ["mes","fecha"]]
-        br_sel=st.multiselect("",br_cols,default=br_cols[:3])
 
         st.markdown("**🇦🇷 Provincias Argentina**")
         ar_opts={"Bs. As. blanco":"BA_blanco","Bs. As. color":"BA_color","Santa Fe blanco":"SF_blanco","Entre Ríos blanco":"ER_blanco"}
@@ -357,7 +374,9 @@ def render_precios():
 
     with c1:
         if df_br is not None and br_cols:
-            v,m=last_val(df_br,br_cols[0]); kpi(c1,f"🇧🇷 Brasil · {br_cols[0]}","#f97316",(v,"BRL"),m_lbl,vfmt,f"R${v:.4f} · {m}" if v else "Sin datos")
+            br_avg=df_br[br_cols].mean(axis=1); idx=br_avg.dropna().index
+            v=br_avg.iloc[idx[-1]] if len(idx) else None; m=df_br["mes"].iloc[idx[-1]] if len(idx) else None
+            kpi(c1,"🇧🇷 Brasil · Promedio","#f97316",(v,"BRL"),m_lbl,vfmt,f"R${v:.4f} · {m}" if v else "Sin datos")
     with c2:
         if df_ar is not None:
             v,m=last_val(df_ar,"BA_blanco"); kpi(c2,"🇦🇷 Argentina · Bs. As. blanco","#60a5fa",(v,"ARS"),m_lbl,vfmt,f"ARS${v:.2f} · {m}" if v else "Sin datos")
@@ -374,17 +393,15 @@ def render_precios():
     tab1, tab2 = st.tabs(["📈 Evolución de precios", "📋 Datos"])
 
     def hover(name):
-        return f"<b>{name}</b><br>%{{x|%B %Y}}: <b>${{y:,.{4 if en_usd else 0}f}}</b> {m_lbl}/huevo<extra></extra>"
+        return f"<b>{name}</b><br>%{{x|%B %Y}}: <b>%{{y:,.{4 if en_usd else 0}f}}</b> {m_lbl}/huevo<extra></extra>"
 
     with tab1:
         fig=go.Figure()
-        if df_br is not None:
-            for e in br_sel:
-                if e in df_br.columns:
-                    y=df_br[e].apply(lambda v:conv(v,"BRL"))
-                    fig.add_trace(go.Scatter(x=df_br["fecha"],y=y,name=f"🇧🇷 {e}",
-                        line=dict(color=BR_COLORS.get(e,"#f97316"),width=2),mode="lines+markers",
-                        marker=dict(size=4),hovertemplate=hover(f"🇧🇷 {e}")))
+        if df_br is not None and br_cols:
+            y_avg=df_br[br_cols].mean(axis=1).apply(lambda v:conv(v,"BRL"))
+            fig.add_trace(go.Scatter(x=df_br["fecha"],y=y_avg,name="🇧🇷 Brasil",
+                line=dict(color="#f97316",width=2.5),mode="lines+markers",
+                marker=dict(size=4),hovertemplate=hover("🇧🇷 Brasil")))
         if df_ar is not None:
             ar_lbl={"BA_blanco":"Bs. As. blanco","BA_color":"Bs. As. color","SF_blanco":"Santa Fe blanco","ER_blanco":"Entre Ríos blanco"}
             for c in ar_sel:
@@ -407,13 +424,20 @@ def render_precios():
             title=dict(text=f"Precio por huevo individual · {m_lbl} · tipo de cambio oficial",font=dict(size=12,color="#4a5568")))
         st.plotly_chart(fig,use_container_width=True)
         st.markdown('<div class="nota">Brasil: CONAB mensual ÷ 12 · Argentina: CAPIA ARS/docena ÷ 12 · Chile: ODEPA CLP/unidad feria libre · USA: FRED USD/docena ÷ 12</div>',unsafe_allow_html=True)
+        st.download_button("📥 Descargar precios históricos (Excel)",
+            data=make_excel(df_br,df_ar,df_cl,df_us),
+            file_name=f"monitor_huevos_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab2:
         d1,d2=st.columns(2)
         with d1:
             st.markdown("**🇧🇷 Brasil (BRL/huevo · CONAB)**")
             if df_br is not None:
-                st.dataframe(df_br[[c for c in df_br.columns if c!="fecha"]].set_index("mes").round(4),use_container_width=True)
+                br_disp=df_br[[c for c in df_br.columns if c!="fecha"]].copy()
+                br_num=[c for c in br_disp.columns if c!="mes"]
+                br_disp["Promedio"]=df_br[br_num].mean(axis=1).round(4)
+                st.dataframe(br_disp.set_index("mes").round(4),use_container_width=True)
             st.markdown("**🇨🇱 Chile (CLP/huevo · ODEPA)**")
             if df_cl is not None:
                 st.dataframe(df_cl[["mes","precio_clp"]].set_index("mes").round(2),use_container_width=True)
