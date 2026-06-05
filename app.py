@@ -1,0 +1,591 @@
+"""
+Monitor de Huevos — Menú principal
+===================================
+Sección 1: Precios internacionales (Brasil, Argentina, Chile, USA)
+Sección 2: Importaciones de huevos a Chile (herramienta HTML)
+"""
+
+import streamlit as st
+import requests
+import pandas as pd
+import plotly.graph_objects as go
+import numpy as np
+from datetime import datetime
+from io import StringIO, BytesIO
+import streamlit.components.v1 as components
+import re, os
+import pdfplumber
+import xlrd
+
+FRED_API_KEY = "a80093ab267bd7a703209192064050b5"
+
+st.set_page_config(
+    page_title="Monitor de Huevos",
+    page_icon="🥚",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ── Estilos globales ──────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+html,body,[class*="css"]{font-family:'Syne',sans-serif;}
+[data-testid="stAppViewContainer"]{background:#0b0f1a;color:#e8e6e1;}
+[data-testid="stSidebar"]{background:#0f1420;border-right:1px solid #1e2535;}
+.block-container{padding-top:2rem;max-width:1200px;}
+.kpi-card{background:#131929;border:1px solid #1e2a3a;border-radius:12px;padding:16px 20px;margin-bottom:10px;}
+.kpi-label{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#4a5568;margin-bottom:5px;font-family:'JetBrains Mono',monospace;}
+.kpi-value{font-size:1.7rem;font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1;}
+.kpi-sub{font-size:10px;color:#4a5568;margin-top:4px;font-family:'JetBrains Mono',monospace;}
+.fuente-badge{display:inline-block;background:#1e2535;border:1px solid #2a3550;border-radius:6px;padding:2px 8px;font-size:10px;font-family:'JetBrains Mono',monospace;color:#64748b;margin-right:4px;}
+.nota{font-size:11px;color:#374151;font-family:'JetBrains Mono',monospace;margin-top:6px;}
+.menu-card{
+    background:#0f1829;border:1px solid #1e2a3a;border-radius:16px;
+    padding:40px 36px;cursor:pointer;transition:all .2s;text-align:center;
+    display:block;text-decoration:none;
+}
+.menu-card:hover{border-color:#f97316;background:#141f35;transform:translateY(-2px);}
+.menu-card-icon{font-size:52px;margin-bottom:16px;}
+.menu-card-title{font-size:1.4rem;font-weight:800;color:#e8e6e1;margin-bottom:8px;}
+.menu-card-desc{font-size:12px;color:#4a5568;line-height:1.6;font-family:'JetBrains Mono',monospace;}
+.back-btn{background:transparent;border:1px solid #1e2535;border-radius:8px;
+    padding:6px 14px;color:#4a5568;cursor:pointer;font-family:'Syne',sans-serif;
+    font-size:12px;transition:all .15s;margin-bottom:20px;}
+.back-btn:hover{border-color:#e8e6e1;color:#e8e6e1;}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Session state ─────────────────────────────────────────────────────────────
+if "seccion" not in st.session_state:
+    st.session_state.seccion = "menu"
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def last_val(df, col):
+    if df is None or col not in df.columns: return None, None
+    s = df[col].dropna()
+    if s.empty: return None, None
+    return s.iloc[-1], df["mes"].iloc[s.index[-1]]
+
+# ── Tipo de cambio ────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def get_fx():
+    fx = {"USD_CLP":950.0,"BRL_CLP":170.0,"ARS_CLP":0.86,
+          "BRL_USD":0.18,"ARS_USD":1/1100,"CLP_USD":1/950}
+    try:
+        r=requests.get("https://mindicador.cl/api/dolar",timeout=8)
+        u=float(r.json()["serie"][0]["valor"]); fx["USD_CLP"]=u; fx["CLP_USD"]=1/u
+    except: u=fx["USD_CLP"]
+    try:
+        r=requests.get("https://economia.awesomeapi.com.br/json/last/USD-BRL",timeout=8)
+        b=float(r.json()["USDBRL"]["bid"]); fx["BRL_USD"]=1/b; fx["BRL_CLP"]=u/b
+    except: pass
+    # MEP (dólar bolsa) — tipo de cambio de mercado, evita la brecha oficial
+    try:
+        r=requests.get("https://dolarapi.com/v1/dolares/bolsa",timeout=8)
+        a_mep=float(r.json()["venta"]); fx["ARS_USD"]=1/a_mep; fx["ARS_CLP"]=u/a_mep
+    except:
+        # fallback: BCRA oficial
+        try:
+            today=datetime.now().strftime("%Y-%m-%d"); first=datetime.now().strftime("%Y-%m-01")
+            r=requests.get(f"https://api.bcra.gob.ar/estadisticas/v2.0/datosVariable/4/{first}/{today}",timeout=8,verify=False)
+            a=float(r.json()["results"][-1]["valor"]); fx["ARS_USD"]=1/a; fx["ARS_CLP"]=u/a
+        except: pass
+    return fx
+
+# ── Scrapers ──────────────────────────────────────────────────────────────────
+HEADERS={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","Accept-Language":"es,pt;q=0.9"}
+
+def _parse_anual_pdf(pdf_bytes, year):
+    """Parsea PDF anual de Procon-SP: extrae los 12 valores mensuales de Ovos Brancos."""
+    records=[]
+    try:
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text=page.extract_text() or ""
+                text=re.sub(r'(\d)\s+([,\.])',r'\1\2',text)
+                for line in text.split("\n"):
+                    if re.search(r'Ovos\s+Brancos',line,re.IGNORECASE):
+                        vals=re.findall(r'\d{1,3},\d{2}',line)
+                        if len(vals)>=12:
+                            for month_idx, val in enumerate(vals[:12],start=1):
+                                price=float(val.replace(',','.'))
+                                if 3.0<price<100.0:
+                                    records.append({
+                                        "mes":f"{year}-{month_idx:02d}",
+                                        "fecha":pd.Timestamp(f"{year}-{month_idx:02d}-01"),
+                                        "precio_brl":round(price/12,4)})
+                            return records
+    except: pass
+    return records
+
+def _brasil_proconsp():
+    """Procon-SP — descubre PDFs via WP API, parsea Ovos Brancos dúzia — varejo SP"""
+    try:
+        r=requests.get(
+            "https://www.procon.sp.gov.br/wp-json/wp/v2/posts?search=cesta+basica&per_page=40&orderby=date&order=desc",
+            headers=HEADERS,timeout=15)
+        posts=r.json()
+        if not isinstance(posts,list): posts=[]
+    except: posts=[]
+    records=[]; seen_pdfs=set()
+    for post in posts:
+        try:
+            pub_date=pd.Timestamp(post["date"][:10])
+            data_date=pub_date-pd.DateOffset(months=1)
+            data_year=int(data_date.year); data_month=int(data_date.month)
+            content=post.get("content",{}).get("rendered","")
+            pdf_urls=re.findall(r'https://[^"<>\s]+\.pdf',content)
+            cb_pdfs=[u for u in pdf_urls if re.search(r'/CB[-_]|/CB[a-zA-Z]',u)
+                     and not any(x in u.lower() for x in ['arroz','planilha','pesquisa','coleta'])
+                     and u not in seen_pdfs]
+            if not cb_pdfs: continue
+            pdf_url=cb_pdfs[0]; seen_pdfs.add(pdf_url)
+            r2=requests.get(pdf_url,headers=HEADERS,timeout=15)
+            if r2.status_code!=200 or len(r2.content)<5000: continue
+            # PDFs anuais (CBAnual24.pdf, CB-Anual-25.pdf, CB_Anual_23.pdf)
+            # NO confundir con mensuales que tienen "comparativo-anual" en el nombre
+            if re.search(r'/CB[-_]?Anual[-_]?\d{2}\.pdf', pdf_url, re.IGNORECASE):
+                anual_year=pub_date.year-1  # report publicado en enero del año siguiente
+                annual_records=_parse_anual_pdf(r2.content, anual_year)
+                records.extend(annual_records)
+                continue
+            # PDF mensual normal
+            with pdfplumber.open(BytesIO(r2.content)) as pdf:
+                for page in pdf.pages:
+                    text=page.extract_text() or ""
+                    text=re.sub(r'(\d)\s+([,\.])',r'\1\2',text)
+                    m=re.search(r'Ovos\s+Brancos[^\n]*?(\d{1,3}[,\.]\d{2})\s+(\d{1,3}[,\.]\d{2})',text)
+                    if m:
+                        curr=float(m.group(2).replace(',','.'))
+                        if 3.0<curr<100.0:
+                            records.append({"mes":f"{data_year}-{data_month:02d}",
+                                "fecha":pd.Timestamp(f"{data_year}-{data_month:02d}-01"),
+                                "precio_brl":round(curr/12,4)})
+                            break
+        except: continue
+    return records
+
+@st.cache_data(ttl=43200)
+def scrape_brasil():
+    """Procon-SP — Ovos Brancos dúzia — varejo São Paulo — retail consumidor"""
+    records=_brasil_proconsp()
+    if not records: return None,"Sin datos Brasil"
+    df=pd.DataFrame(records).drop_duplicates("mes").sort_values("mes").reset_index(drop=True)
+    return df,"Procon-SP varejo"
+
+@st.cache_data(ttl=43200)
+def scrape_argentina():
+    """INDEC IPC Precios Promedio — Huevos de gallina — GBA retail consumidor con IVA"""
+    try:
+        r=requests.get("https://www.indec.gob.ar/ftp/cuadros/economia/sh_ipc_precios_promedio.xls",
+                       headers=HEADERS,timeout=30)
+        r.raise_for_status()
+    except Exception as e: return None,str(e)
+    try:
+        wb=xlrd.open_workbook(file_contents=r.content)
+        sh=wb.sheet_by_index(0)
+        meses_map={"enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+                   "julio":7,"agosto":8,"septiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
+        # Build column→(year,month) index from header rows 2 and 3
+        dates={}; current_year=None
+        for col in range(3,sh.ncols):
+            yr_raw=str(sh.cell_value(2,col)).strip()
+            m_yr=re.search(r'(\d{4})',yr_raw)
+            if m_yr: current_year=int(m_yr.group(1))
+            mo_raw=str(sh.cell_value(3,col)).strip().lower()
+            if mo_raw in meses_map and current_year:
+                dates[col]=(current_year,meses_map[mo_raw])
+        # Find GBA Huevos de gallina row
+        huevos_row=None
+        for row in range(sh.nrows):
+            if str(sh.cell_value(row,0)).strip()=="GBA" and "huevo" in str(sh.cell_value(row,1)).lower():
+                huevos_row=row; break
+        if huevos_row is None: return None,"No encontrado Huevos de gallina GBA"
+        records=[]
+        for col,(year,month) in dates.items():
+            raw=sh.cell_value(huevos_row,col)
+            try:
+                price=float(str(raw).replace(',','.').strip())
+                if price>0:
+                    records.append({"mes":f"{year}-{month:02d}",
+                        "fecha":pd.Timestamp(f"{year}-{month:02d}-01"),
+                        "precio_ars":round(price/12,4)})
+            except: pass
+        if not records: return None,"Sin valores INDEC"
+        df=pd.DataFrame(records).drop_duplicates("mes").sort_values("mes").reset_index(drop=True)
+        return df,None
+    except Exception as e: return None,str(e)
+
+@st.cache_data(ttl=43200)
+def scrape_chile():
+    urls=[
+        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/9f885df4-afeb-4b75-8bab-9334f79db00f/download/precio_consumidor_2026.csv",
+        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/eab239c4-e338-4cde-a9e0-7c4f27826030/download/precio_consumidor_2025.csv",
+        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/5f773b96-6c3a-4017-b871-6340d779ea96/download/precio_consumidor_2024.csv",
+        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/1a73ae5d-f4e2-4706-b2c3-e1e05a23fcb6/download/precio_consumidor_2023.csv",
+        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/e9c3f2fc-9bb7-4f5f-a529-d1d60d7a61a5/download/precio_consumidor_2022.csv",
+    ]
+    df_all=[]
+    for url in urls:
+        try:
+            r=requests.get(url,headers=HEADERS,timeout=20)
+            if r.status_code!=200 or len(r.content)<500: continue
+            df=pd.read_csv(StringIO(r.content.decode("utf-8-sig")),sep=",",engine="python")
+            df.columns=[c.strip() for c in df.columns]
+            df_e=df[df["Producto"].str.contains("blanco",case=False,na=False)].copy()
+            df_g=df_e[df_e["Producto"].str.contains("grande",case=False,na=False)]
+            if not df_g.empty: df_e=df_g
+            df_e=df_e[df_e["Tipo de punto monitoreo"].str.contains("Feria libre",case=False,na=False)].copy()
+            if df_e.empty: continue
+            df_e["precio_clp_raw"]=pd.to_numeric(df_e["Precio promedio"].astype(str).str.replace(",",".",regex=False),errors="coerce")
+            def clp_x_h(row):
+                p=row["precio_clp_raw"]; u=str(row["Unidad"])
+                if pd.isna(p): return None
+                nums=re.findall(r'\d+',u); n=int(nums[-1]) if nums else 12
+                return p/n
+            df_e["precio_clp"]=df_e.apply(clp_x_h,axis=1)
+            df_e["mes"]=df_e["Anio"].astype(str)+"-"+df_e["Mes"].astype(str).str.zfill(2)
+            m=df_e.groupby("mes")["precio_clp"].mean().round(2).reset_index(); m.columns=["mes","precio_clp"]; df_all.append(m)
+        except: continue
+    if not df_all: return None,"Sin datos ODEPA"
+    df=pd.concat(df_all).drop_duplicates("mes").sort_values("mes").reset_index(drop=True)
+    df["fecha"]=pd.to_datetime(df["mes"]+"-01")
+    return df,None
+
+def _usa_ams_txt():
+    """USDA AMS nw_py018.txt — Prices Paid to Producers Iowa-MN-WI Large (cents/doz)"""
+    records=[]
+    try:
+        r=requests.get("https://www.ams.usda.gov/mnreports/nw_py018.txt",headers=HEADERS,timeout=15)
+        if r.status_code!=200: return records
+        text=r.text
+        # Date: "FOR THE WEEK OF  JANUARY 31, 2025" or similar
+        m_date=re.search(r'FOR THE WEEK OF\s+([A-Z]+ \d{1,2},\s*\d{4})',text,re.IGNORECASE)
+        if not m_date: return records
+        ts=pd.Timestamp(m_date.group(1).strip())
+        # Iowa-MN-WI section → LARGE MOSTLY: NNN
+        idx=text.find('IOWA-MN-WI')
+        if idx<0: return records
+        section=text[idx:idx+400]
+        m_p=re.search(r'LARGE[^\n]*?MOSTLY\s*[:\-]?\s*(\d{3,4})',section,re.IGNORECASE)
+        if not m_p: return records
+        price_usd=float(m_p.group(1))/100/12
+        records.append({"mes":f"{ts.year}-{ts.month:02d}",
+            "fecha":pd.Timestamp(f"{ts.year}-{ts.month:02d}-01"),
+            "precio_usd":round(price_usd,6)})
+    except: pass
+    return records
+
+def _usa_ams_pdf():
+    """USDA AMS ams_2848.pdf — Prices Paid to Producers, formato vigente desde feb 2025"""
+    records=[]
+    try:
+        r=requests.get("https://www.ams.usda.gov/mnreports/ams_2848.pdf",headers=HEADERS,timeout=20)
+        if r.status_code!=200 or len(r.content)<10000: return records
+        with pdfplumber.open(BytesIO(r.content)) as pdf:
+            full_text=""
+            for page in pdf.pages:
+                full_text+=(page.extract_text() or "")
+            # Date header: "JANUARY 31, 2025" or "Week of January 31, 2025"
+            m_date=re.search(r'(?:Week of\s+)?([A-Z][a-z]+ \d{1,2},?\s*\d{4})',full_text)
+            if not m_date: return records
+            ts=pd.Timestamp(m_date.group(1).replace(',','').strip())
+            # "PRICES PAID TO PRODUCERS" section → Large eggs, Midwest/Iowa
+            idx=full_text.upper().find('PRICES PAID TO PRODUCERS')
+            if idx<0:
+                # fallback: any "LARGE MOSTLY NNN" pattern
+                m_p=re.search(r'LARGE[^\n]{0,30}MOSTLY[^\n]{0,20}?(\d{3,4})',full_text,re.IGNORECASE)
+            else:
+                section=full_text[idx:idx+800]
+                m_p=re.search(r'LARGE[^\n]{0,30}MOSTLY[^\n]{0,20}?(\d{3,4})',section,re.IGNORECASE)
+            if not m_p: return records
+            price_usd=float(m_p.group(1))/100/12
+            records.append({"mes":f"{ts.year}-{ts.month:02d}",
+                "fecha":pd.Timestamp(f"{ts.year}-{ts.month:02d}-01"),
+                "precio_usd":round(price_usd,6)})
+    except: pass
+    return records
+
+@st.cache_data(ttl=43200)
+def scrape_usa():
+    """USDA AMS Prices Paid to Producers (Iowa-MN-WI Large) + FRED retail fallback"""
+    # FRED: retail history (APU0000708111), largo historial
+    fred_records=[]
+    try:
+        r=requests.get(f"https://api.stlouisfed.org/fred/series/observations?series_id=APU0000708111&api_key={FRED_API_KEY}&file_type=json&sort_order=desc&limit=60",timeout=15)
+        obs=r.json().get("observations",[])
+        fred_records=[{"mes":o["date"][:7],"precio_usd":float(o["value"])/12,
+            "fecha":pd.Timestamp(o["date"][:7]+"-01")} for o in obs if o.get("value",".")!="."]
+    except: pass
+    # USDA AMS: precios productor (más recientes, pueden solapar con FRED)
+    ams_records=_usa_ams_txt() or _usa_ams_pdf()
+    # USDA AMS tiene prioridad sobre FRED: ponerlo al final → keep="last" lo mantiene
+    all_records=fred_records+ams_records
+    if not all_records: return None,"Sin datos USA"
+    df=(pd.DataFrame(all_records)
+        .drop_duplicates("mes",keep="last")         # USDA AMS (al final) pisa FRED si hay overlap
+        .sort_values("mes").reset_index(drop=True))
+    return df,None
+
+# ── Plotly layout ─────────────────────────────────────────────────────────────
+LAYOUT=dict(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(family="JetBrains Mono,monospace",color="#9ca3af",size=11),
+    xaxis=dict(gridcolor="#1e2535",showgrid=True,zeroline=False,tickfont=dict(color="#6b7280"),tickformat="%b %Y"),
+    yaxis=dict(gridcolor="#1e2535",showgrid=True,zeroline=False,tickfont=dict(color="#6b7280")),
+    legend=dict(bgcolor="rgba(13,20,35,0.8)",bordercolor="#1e2535",borderwidth=1,font=dict(size=11)),
+    margin=dict(l=10,r=10,t=40,b=10),hovermode="x unified",
+    hoverlabel=dict(bgcolor="#0f1829",bordercolor="#334155",font=dict(family="JetBrains Mono,monospace",size=12)))
+
+def make_excel(df_br,df_ar,df_cl,df_us):
+    buf=BytesIO()
+    with pd.ExcelWriter(buf,engine="openpyxl") as w:
+        if df_br is not None and "precio_brl" in df_br.columns:
+            df_br[["mes","precio_brl"]].to_excel(w,sheet_name="Brasil_BRL_huevo",index=False)
+        if df_ar is not None and "precio_ars" in df_ar.columns:
+            df_ar[["mes","precio_ars"]].to_excel(w,sheet_name="Argentina_ARS_huevo",index=False)
+        if df_cl is not None: df_cl[["mes","precio_clp"]].to_excel(w,sheet_name="Chile_CLP_huevo",index=False)
+        if df_us is not None: df_us[["mes","precio_usd"]].to_excel(w,sheet_name="USA_USD_huevo",index=False)
+    return buf.getvalue()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECCIÓN: MENÚ PRINCIPAL
+# ══════════════════════════════════════════════════════════════════════════════
+def render_menu():
+    st.markdown("""
+    <div style="text-align:center;padding:40px 0 30px;">
+        <div style="font-size:52px;margin-bottom:12px;">🥚</div>
+        <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:2.2rem;letter-spacing:-1px;color:#e8e6e1;margin-bottom:8px;">
+            Monitor de Huevos
+        </div>
+        <div style="font-size:12px;color:#374151;font-family:'JetBrains Mono',monospace;letter-spacing:2px;">
+            HERRAMIENTAS DE ANÁLISIS · CHILE
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2, gap="large")
+
+    with col1:
+        st.markdown("""
+        <div class="menu-card" id="card-precios">
+            <div class="menu-card-icon">📈</div>
+            <div class="menu-card-title">Precios internacionales</div>
+            <div class="menu-card-desc">
+                Monitoreo en tiempo real del precio del huevo en<br>
+                Brasil · Argentina · Chile · USA<br><br>
+                Fuentes: Procon-SP · INDEC · ODEPA · FRED/BLS<br>
+                Precios retail consumidor · CLP o USD · ARS a tipo MEP
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Abrir →", key="btn_precios", use_container_width=True):
+            st.session_state.seccion = "precios"
+            st.rerun()
+
+    with col2:
+        st.markdown("""
+        <div class="menu-card" id="card-imp">
+            <div class="menu-card-icon">🚢</div>
+            <div class="menu-card-title">Importaciones a Chile</div>
+            <div class="menu-card-desc">
+                Análisis de tendencias de importación<br>
+                Partidas arancelarias 407xx y 408xx<br><br>
+                Sube archivos mensuales de aduana · Historial acumulado<br>
+                Cálculo de N° huevos · Gráficos de tendencia
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Abrir →", key="btn_imp", use_container_width=True):
+            st.session_state.seccion = "importaciones"
+            st.rerun()
+
+    st.markdown(f"""
+    <div style="text-align:center;margin-top:40px;font-size:10px;color:#1e2535;font-family:'JetBrains Mono',monospace;">
+        {datetime.now().strftime("%d/%m/%Y %H:%M")}
+    </div>
+    """, unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECCIÓN: PRECIOS INTERNACIONALES
+# ══════════════════════════════════════════════════════════════════════════════
+def render_precios():
+    if st.button("← Volver al menú", key="back_precios"):
+        st.session_state.seccion = "menu"
+        st.rerun()
+
+    st.markdown(f"""
+    <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:1.8rem;letter-spacing:-1px;margin-bottom:6px;">
+        📈 Precios internacionales del huevo
+    </div>
+    <div style="margin-bottom:20px;">
+        <span class="fuente-badge">🇧🇷 Procon-SP</span><span class="fuente-badge">🇦🇷 INDEC</span>
+        <span class="fuente-badge">🇨🇱 ODEPA</span><span class="fuente-badge">🇺🇸 FRED/BLS</span>
+        <span style="font-size:10px;color:#374151;font-family:'JetBrains Mono',monospace;">{datetime.now().strftime("%d/%m/%Y %H:%M")}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.spinner("Cargando datos..."):
+        fx=get_fx(); df_br,e_br=scrape_brasil(); df_ar,e_ar=scrape_argentina()
+        df_cl,e_cl=scrape_chile(); df_us,e_us=scrape_usa()
+
+    with st.sidebar:
+        st.markdown("### ⚙️ Opciones")
+        st.markdown("**💰 Moneda**")
+        moneda=st.radio("",["CLP (pesos chilenos)","USD (dólares)"],index=0)
+        en_usd=moneda=="USD (dólares)"; m_lbl="USD" if en_usd else "CLP"; vfmt=".4f" if en_usd else ".0f"
+
+        def conv(v,tipo):
+            if v is None: return None
+            r={"BRL":fx["BRL_USD"] if en_usd else fx["BRL_CLP"],"ARS":fx["ARS_USD"] if en_usd else fx["ARS_CLP"],
+               "CLP":fx["CLP_USD"] if en_usd else 1.0,"USD":1.0 if en_usd else fx["USD_CLP"]}
+            return v*r.get(tipo,1)
+
+        st.markdown("---")
+        st.markdown("**🌎 Series**")
+        show_br=st.checkbox("🇧🇷 Brasil (Procon-SP)",value=True)
+        show_ar=st.checkbox("🇦🇷 Argentina (INDEC)",value=True)
+        show_cl=st.checkbox("🇨🇱 Chile (ODEPA)",value=True)
+        show_us=st.checkbox("🇺🇸 USA (USDA/FRED)",value=True)
+
+        st.markdown("---")
+        st.markdown("**📅 Período**")
+        if "rango_v3" not in st.session_state:
+            st.session_state.rango_v3="3A"
+        rango=st.radio("",["6M","1A","2A","3A","Todo"],key="rango_v3",horizontal=True)
+        rango_map={"6M":6,"1A":12,"2A":24,"3A":36,"Todo":None}
+        meses_rango=rango_map[rango]
+        def filtrar(df,col="fecha"):
+            if df is None or meses_rango is None: return df
+            cutoff=pd.Timestamp.now()-pd.DateOffset(months=meses_rango)
+            return df[df[col]>=cutoff].reset_index(drop=True)
+
+        st.markdown("---")
+        st.markdown(f"""<div style="font-size:10px;font-family:'JetBrains Mono',monospace;color:#374151;line-height:2;">
+        💱 1 USD = CLP${fx['USD_CLP']:,.0f}<br>💱 1 BRL = CLP${fx['BRL_CLP']:.1f}<br>💱 1 ARS = CLP${fx['ARS_CLP']:.4f} <span style="color:#1e3a2f;">(MEP)</span>
+        </div>""", unsafe_allow_html=True)
+
+    # KPI Cards
+    c1,c2,c3,c4=st.columns(4)
+    def kpi(col_obj,label,color,v,m_l,vf,sub):
+        cv=conv(v[0],v[1]) if v[0] else 0
+        col_obj.markdown(f"""<div class="kpi-card">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value" style="color:{color};">{cv:{vf}}</div>
+            <div class="kpi-sub">{m_l}/huevo · {sub}</div>
+        </div>""", unsafe_allow_html=True)
+
+    with c1:
+        if df_br is not None:
+            v,m=last_val(df_br,"precio_brl")
+            kpi(c1,"🇧🇷 Brasil · Procon-SP varejo","#f97316",(v,"BRL"),m_lbl,vfmt,f"R${v:.4f} · {m}" if v else "Sin datos")
+    with c2:
+        if df_ar is not None:
+            v,m=last_val(df_ar,"precio_ars")
+            kpi(c2,"🇦🇷 Argentina · GBA · MEP","#60a5fa",(v,"ARS"),m_lbl,vfmt,f"ARS${v:.2f} · {m}" if v else "Sin datos")
+    with c3:
+        if df_cl is not None:
+            v,m=last_val(df_cl,"precio_clp")
+            kpi(c3,"🇨🇱 Chile · Feria libre","#4ade80",(v,"CLP"),m_lbl,vfmt,f"CLP${v:.0f} · {m}" if v else "Sin datos")
+    with c4:
+        if df_us is not None:
+            v,m=last_val(df_us,"precio_usd")
+            kpi(c4,"🇺🇸 USA · Grade A Large","#e879f9",(v,"USD"),m_lbl,vfmt,f"USD${v:.4f} · {m}" if v else "Sin datos")
+
+    st.markdown("<br>",unsafe_allow_html=True)
+
+    tab1, tab2 = st.tabs(["📈 Evolución de precios", "📋 Datos"])
+
+    def hover(name):
+        decimals=4 if en_usd else 0
+        return f"<b>{name}</b><br>%{{x|%B %Y}}: <b>%{{y:,.{decimals}f}}</b> {m_lbl}/huevo<extra></extra>"
+
+    with tab1:
+        fig=go.Figure()
+        fbr=filtrar(df_br); far=filtrar(df_ar); fcl=filtrar(df_cl); fus=filtrar(df_us)
+        if show_br and fbr is not None and "precio_brl" in fbr.columns:
+            y=fbr["precio_brl"].apply(lambda v: conv(v,"BRL"))
+            fig.add_trace(go.Scatter(x=fbr["fecha"],y=y,name="🇧🇷 Brasil",
+                line=dict(color="#f97316",width=2.5),mode="lines+markers",
+                marker=dict(size=4),hovertemplate=hover("🇧🇷 Brasil")))
+        if show_ar and far is not None and "precio_ars" in far.columns:
+            y=far["precio_ars"].apply(lambda v: conv(v,"ARS"))
+            fig.add_trace(go.Scatter(x=far["fecha"],y=y,name="🇦🇷 Argentina",
+                line=dict(color="#60a5fa",width=2),mode="lines+markers",
+                marker=dict(size=4),hovertemplate=hover("🇦🇷 Argentina")))
+        if show_cl and fcl is not None:
+            y=fcl["precio_clp"].apply(lambda v: conv(v,"CLP"))
+            fig.add_trace(go.Scatter(x=fcl["fecha"],y=y,name="🇨🇱 Chile",
+                line=dict(color="#4ade80",width=2,dash="dot"),mode="lines+markers",
+                marker=dict(size=4),hovertemplate=hover("🇨🇱 Chile")))
+        if show_us and fus is not None:
+            y=fus["precio_usd"].apply(lambda v: conv(v,"USD"))
+            fig.add_trace(go.Scatter(x=fus["fecha"],y=y,name="🇺🇸 USA",
+                line=dict(color="#e879f9",width=2,dash="dashdot"),mode="lines+markers",
+                marker=dict(size=4),hovertemplate=hover("🇺🇸 USA")))
+        fig.update_layout(**LAYOUT,yaxis_title=f"{m_lbl}/huevo",height=440,
+            title=dict(text=f"Precio por huevo · {m_lbl} · ARS a tipo MEP",font=dict(size=12,color="#4a5568")))
+        st.plotly_chart(fig,use_container_width=True)
+        st.markdown(
+            '<div class="nota">'
+            '🇧🇷 Procon-SP · Ovos Brancos dúzia · varejo São Paulo · con impuestos · '
+            '🇦🇷 INDEC IPC · Huevos de gallina docena · GBA · retail consumidor con IVA · tipo cambio MEP · '
+            '🇨🇱 ODEPA · huevo grande blanco · feria libre · consumidor con IVA 19% · '
+            '🇺🇸 FRED/BLS · Grade A Large · retail con impuestos'
+            '</div>',
+            unsafe_allow_html=True)
+        st.download_button("📥 Descargar precios históricos (Excel)",
+            data=make_excel(df_br,df_ar,df_cl,df_us),
+            file_name=f"monitor_huevos_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    with tab2:
+        d1,d2=st.columns(2)
+        with d1:
+            fuente_br_lbl=(e_br if df_br is not None and e_br not in (None,"Sin datos Brasil") else "Procon-SP")
+            st.markdown(f"**🇧🇷 Brasil (BRL/huevo · {fuente_br_lbl})**")
+            if df_br is not None:
+                st.dataframe(df_br[["mes","precio_brl"]].set_index("mes").round(4),use_container_width=True)
+            st.markdown("**🇨🇱 Chile (CLP/huevo · ODEPA)**")
+            if df_cl is not None:
+                st.dataframe(df_cl[["mes","precio_clp"]].set_index("mes").round(2),use_container_width=True)
+        with d2:
+            st.markdown("**🇦🇷 Argentina (ARS/huevo · INDEC)**")
+            if df_ar is not None:
+                st.dataframe(df_ar[["mes","precio_ars"]].set_index("mes").round(4),use_container_width=True)
+            st.markdown("**🇺🇸 USA (USD/huevo · USDA AMS/FRED)**")
+            if df_us is not None:
+                st.dataframe(df_us[["mes","precio_usd"]].set_index("mes").round(4),use_container_width=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECCIÓN: IMPORTACIONES
+# ══════════════════════════════════════════════════════════════════════════════
+def render_importaciones():
+    if st.button("← Volver al menú", key="back_imp"):
+        st.session_state.seccion = "menu"
+        st.rerun()
+
+    st.markdown("""
+    <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:1.8rem;letter-spacing:-1px;margin-bottom:16px;">
+        🚢 Importaciones de huevos a Chile
+    </div>
+    """, unsafe_allow_html=True)
+
+    html_path = os.path.join(os.path.dirname(__file__), "importaciones.html")
+    if os.path.exists(html_path):
+        with open(html_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        components.html(html_content, height=860, scrolling=True)
+    else:
+        st.error("⚠️ No se encontró el archivo `importaciones.html` en la misma carpeta que `app.py`.")
+        st.info("Asegúrate de que ambos archivos estén en la misma carpeta.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ROUTER PRINCIPAL
+# ══════════════════════════════════════════════════════════════════════════════
+if st.session_state.seccion == "menu":
+    render_menu()
+elif st.session_state.seccion == "precios":
+    render_precios()
+elif st.session_state.seccion == "importaciones":
+    render_importaciones()
