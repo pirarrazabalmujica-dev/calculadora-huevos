@@ -719,53 +719,33 @@ def render_importaciones():
     prod_data = scrape_produccion_cl()
     prod_script = f'<script>var PRODUCCION_CL={_json.dumps(prod_data)};</script>'
 
-    inline_cache_path = os.path.join(os.path.dirname(__file__), "html_b64.txt")
-    # Invalidar caché si importaciones.html es más nuevo que el caché
-    if os.path.exists(inline_cache_path) and os.path.exists(html_path):
-        if os.path.getmtime(html_path) > os.path.getmtime(inline_cache_path):
-            os.remove(inline_cache_path)
-    # Si tenemos las librerías cacheadas inline, usarlas (inyectar prod_data igual)
-    if os.path.exists(inline_cache_path):
+    # Borrar caché antiguo si existe (ya no se usa)
+    _old_cache = os.path.join(os.path.dirname(__file__), "html_b64.txt")
+    if os.path.exists(_old_cache):
+        try: os.remove(_old_cache)
+        except: pass
+
+    # Inlinear scripts CDN (evita bloqueos CSP del iframe de Streamlit)
+    import re as _re
+    def _inline_script(match):
+        src = match.group(1)
         try:
-            import base64
-            cached = base64.b64decode(open(inline_cache_path, "rb").read()).decode("utf-8")
-            cached = cached.replace("</head>", prod_script + "</head>", 1)
-            components.html(cached, height=900, scrolling=True)
-            return
+            r = requests.get(src, timeout=15)
+            if r.status_code == 200:
+                # Escapar </script> para no romper el parser HTML
+                safe = r.text.replace("</script>", "<\\/script>")
+                return f"<script>{safe}</script>"
         except Exception:
             pass
+        return match.group(0)
 
-    # Intentar descargar e inlinear los scripts
-    try:
-        import re as _re
-        def _inline_script(match):
-            src = match.group(1)
-            try:
-                r = requests.get(src, timeout=15)
-                if r.status_code == 200:
-                    # Escapar </script> dentro del JS para no romper el parser HTML
-                    safe = r.text.replace("</script>", "<\\/script>")
-                    return f"<script>{safe}</script>"
-            except Exception:
-                pass
-            return match.group(0)
-
-        patched = _re.sub(
-            r'<script src="([^"]+)"[^>]*></script>',
-            _inline_script,
-            html_content,
-        )
-        try:
-            import base64
-            open(inline_cache_path, "wb").write(base64.b64encode(patched.encode("utf-8")))
-        except Exception:
-            pass
-        patched = patched.replace("</head>", prod_script + "</head>", 1)
-        components.html(patched, height=900, scrolling=True)
-    except Exception as e:
-        st.warning(f"⚠️ No se pudieron inlinear los scripts externos: {e}.")
-        html_content = html_content.replace("</head>", prod_script + "</head>", 1)
-        components.html(html_content, height=900, scrolling=True)
+    patched = _re.sub(
+        r'<script src="([^"]+)"[^>]*></script>',
+        _inline_script,
+        html_content,
+    )
+    patched = patched.replace("</head>", prod_script + "</head>", 1)
+    components.html(patched, height=900, scrolling=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUTER PRINCIPAL
