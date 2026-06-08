@@ -18,6 +18,7 @@ import pdfplumber
 import xlrd
 
 FRED_API_KEY = "a80093ab267bd7a703209192064050b5"
+APP_VERSION = "2.0.0"
 
 st.set_page_config(
     page_title="Monitor de Huevos",
@@ -59,6 +60,20 @@ html,body,[class*="css"]{font-family:'Syne',sans-serif;}
 # ── Session state ─────────────────────────────────────────────────────────────
 if "seccion" not in st.session_state:
     st.session_state.seccion = "menu"
+
+# ── Version check ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def check_latest_version():
+    try:
+        r = requests.get(
+            "https://raw.githubusercontent.com/pirarrazabalmujica-dev/calculadora-huevos/main/version.txt",
+            timeout=5
+        )
+        if r.status_code == 200:
+            return r.text.strip()
+    except Exception:
+        pass
+    return None
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def last_val(df, col):
@@ -445,9 +460,25 @@ def render_menu():
             st.session_state.seccion = "importaciones"
             st.rerun()
 
+    # version notification
+    try:
+        latest = check_latest_version()
+        if latest and latest != APP_VERSION:
+            lv = tuple(int(x) for x in latest.split('.'))
+            cv = tuple(int(x) for x in APP_VERSION.split('.'))
+            if lv > cv:
+                st.info(
+                    f"🆕 **Nueva versión disponible: v{latest}** (tienes v{APP_VERSION})  \n"
+                    f"Descarga la nueva versión desde [GitHub](https://github.com/pirarrazabalmujica-dev/calculadora-huevos) "
+                    f"y reemplaza tu archivo **Monitor_Huevos.bat**.",
+                    icon="🆕"
+                )
+    except Exception:
+        pass
+
     st.markdown(f"""
     <div style="text-align:center;margin-top:40px;font-size:10px;color:#1e2535;font-family:'JetBrains Mono',monospace;">
-        {datetime.now().strftime("%d/%m/%Y %H:%M")}
+        v{APP_VERSION} · {datetime.now().strftime("%d/%m/%Y %H:%M")}
     </div>
     """, unsafe_allow_html=True)
 
