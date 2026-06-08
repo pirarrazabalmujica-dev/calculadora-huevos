@@ -719,33 +719,17 @@ def render_importaciones():
     prod_data = scrape_produccion_cl()
     prod_script = f'<script>var PRODUCCION_CL={_json.dumps(prod_data)};</script>'
 
-    # Borrar caché antiguo si existe (ya no se usa)
-    _old_cache = os.path.join(os.path.dirname(__file__), "html_b64.txt")
-    if os.path.exists(_old_cache):
-        try: os.remove(_old_cache)
-        except: pass
+    # Borrar caché antiguo si existe
+    for _f in ["html_b64.txt"]:
+        _p = os.path.join(os.path.dirname(__file__), _f)
+        if os.path.exists(_p):
+            try: os.remove(_p)
+            except: pass
 
-    # Inlinear scripts CDN (evita bloqueos CSP del iframe de Streamlit)
-    import re as _re
-    def _inline_script(match):
-        src = match.group(1)
-        try:
-            r = requests.get(src, timeout=15)
-            if r.status_code == 200:
-                # Escapar </script> para no romper el parser HTML
-                safe = r.text.replace("</script>", "<\\/script>")
-                return f"<script>{safe}</script>"
-        except Exception:
-            pass
-        return match.group(0)
-
-    patched = _re.sub(
-        r'<script src="([^"]+)"[^>]*></script>',
-        _inline_script,
-        html_content,
-    )
-    patched = patched.replace("</head>", prod_script + "</head>", 1)
-    components.html(patched, height=900, scrolling=True)
+    # Inyectar datos de producción e servir el HTML directamente
+    # (el HTML incluye meta CSP que permite los scripts CDN desde el iframe)
+    html_content = html_content.replace("</head>", prod_script + "</head>", 1)
+    components.html(html_content, height=900, scrolling=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUTER PRINCIPAL
