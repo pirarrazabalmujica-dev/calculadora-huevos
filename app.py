@@ -661,7 +661,7 @@ def render_precios():
 def scrape_produccion_cl():
     """Chilehuevos — producción mensual total de huevos Chile (boletines PDF)"""
     MES = {'ene':1,'feb':2,'mar':3,'abr':4,'may':5,'jun':6,
-           'jul':7,'ago':8,'sep':9,'oct':10,'nov':11,'dic':12}
+           'jul':7,'ago':8,'sep':9,'sept':9,'oct':10,'nov':11,'dic':12}
     NOMBRES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
                'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
 
@@ -674,7 +674,7 @@ def scrape_produccion_cl():
                     text = page.extract_text() or ""
                     for line in text.split("\n"):
                         m = re.match(
-                            r'(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)'
+                            r'(ene|feb|mar|abr|may|jun|jul|ago|sept?|oct|nov|dic)'
                             r'-(\d{2})\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)',
                             line.strip(), re.IGNORECASE)
                         if m:
