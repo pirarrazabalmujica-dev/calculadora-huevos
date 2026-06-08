@@ -68,7 +68,7 @@ def last_val(df, col):
     return s.iloc[-1], df["mes"].iloc[s.index[-1]]
 
 # ── Tipo de cambio ────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600,show_spinner="💱 Actualizando tipo de cambio...")
 def get_fx():
     fx = {"USD_CLP":950.0,"BRL_CLP":170.0,"ARS_CLP":0.86,
           "BRL_USD":0.18,"ARS_USD":1/1100,"CLP_USD":1/950}
@@ -211,7 +211,7 @@ def scrape_brasil(on_status=None):
     df=pd.DataFrame(records).drop_duplicates("mes").sort_values("mes").reset_index(drop=True)
     return df,"Procon-SP varejo"
 
-@st.cache_data(ttl=43200)
+@st.cache_data(ttl=43200,show_spinner="🇦🇷 Cargando datos INDEC Argentina…")
 def scrape_argentina():
     """INDEC IPC Precios Promedio — Huevos de gallina — GBA retail consumidor con IVA"""
     try:
@@ -254,7 +254,7 @@ def scrape_argentina():
         return df,None
     except Exception as e: return None,str(e)
 
-@st.cache_data(ttl=43200)
+@st.cache_data(ttl=43200,show_spinner="🇨🇱 Cargando datos ODEPA Chile…")
 def scrape_chile():
     urls=[
         "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/9f885df4-afeb-4b75-8bab-9334f79db00f/download/precio_consumidor_2026.csv",
@@ -344,7 +344,7 @@ def _usa_ams_pdf():
     except: pass
     return records
 
-@st.cache_data(ttl=43200)
+@st.cache_data(ttl=43200,show_spinner="🇺🇸 Cargando datos USDA / FRED USA…")
 def scrape_usa():
     """USDA AMS Prices Paid to Producers (Iowa-MN-WI Large) + FRED retail fallback"""
     # FRED: retail history (APU0000708111), largo historial
@@ -626,7 +626,7 @@ def render_precios():
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN: IMPORTACIONES
 # ══════════════════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400,show_spinner="🐔 Cargando producción nacional (Chilehuevos)…")
 def scrape_produccion_cl():
     """Chilehuevos — producción mensual total de huevos Chile (boletines PDF)"""
     MES = {'ene':1,'feb':2,'mar':3,'abr':4,'may':5,'jun':6,
@@ -689,7 +689,7 @@ def scrape_produccion_cl():
                 if k not in data:
                     data[k] = v
             found += 1
-            if found >= 2 and min(data.keys()) <= f"{now.year-2}-01":
+            if found >= 2 and data and min(data.keys()) <= f"{now.year-2}-01":
                 break
 
     return data
