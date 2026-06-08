@@ -675,30 +675,34 @@ def scrape_produccion_cl():
     data = {}
     now = datetime.now()
 
-    # Estrategia: buscar un PDF reciente + PDFs ancla cada ~2 años hacia atrás
-    # Cada PDF cubre ~2-3 años de historia, así 3 PDFs cubren 5+ años
-    def find_pdf_near(yr, mo):
-        """Busca el PDF más cercano a (yr, mo) probando ±6 meses."""
-        for delta in range(0, 7):
-            for sign in [0, -1, 1]:
-                m = mo + sign * delta
-                y = yr
-                while m < 1:  m += 12; y -= 1
-                while m > 12: m -= 12; y += 1
-                c = try_urls(y, m)
-                if c:
-                    return c
-        return None
+    # 1. Buscar el PDF más reciente disponible (mes a mes hacia atrás)
+    recent_content = None
+    for delta in range(0, 24):
+        mo = now.month - delta
+        yr = now.year
+        while mo < 1: mo += 12; yr -= 1
+        recent_content = try_urls(yr, mo)
+        if recent_content:
+            parsed = parse_pdf(recent_content)
+            data.update(parsed)
+            break
 
-    # Anclas: ahora, hace ~2 años, hace ~4 años
-    anchor_years = [now.year, now.year - 2, now.year - 4]
-    for ay in anchor_years:
-        content = find_pdf_near(ay, now.month)
-        if content:
-            parsed = parse_pdf(content)
-            for k, v in parsed.items():
-                if k not in data:
-                    data[k] = v
+    # 2. Si el PDF reciente no cubre 5 años, buscar un PDF antiguo para el historial
+    five_years_ago = f"{now.year - 5}-01"
+    if not data or min(data.keys()) > five_years_ago:
+        # Buscar un PDF de hace ~3 años que cubra el período faltante
+        target_yr = now.year - 3
+        for delta in range(0, 18):
+            mo = now.month - delta
+            yr = target_yr
+            while mo < 1: mo += 12; yr -= 1
+            old_content = try_urls(yr, mo)
+            if old_content:
+                parsed = parse_pdf(old_content)
+                for k, v in parsed.items():
+                    if k not in data:
+                        data[k] = v
+                break
 
     return data
 
