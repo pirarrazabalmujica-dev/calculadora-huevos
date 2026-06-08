@@ -126,6 +126,7 @@ tr:hover td{background:var(--surf2);}
     <!-- Gráfico importaciones vs producción -->
     <div id="prod-box" style="margin-top:14px;display:none;background:#fff;border:1px solid #d0d0d0;border-radius:10px;padding:16px 14px 10px;font-family:Arial,Helvetica,sans-serif;">
       <div id="prod-title" style="font-size:15px;font-weight:700;color:#00456b;margin-bottom:14px;text-align:left;">Producción Nacional vs Importaciones de Huevos (millones de unidades)</div>
+      <div id="prod-range-note" style="font-size:10px;color:#888;margin-top:-10px;margin-bottom:10px;text-align:left;"></div>
       <div style="position:relative;width:100%;height:340px;"><canvas id="prod-mc"></canvas></div>
       <div id="prod-leg" style="display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-top:12px;font-size:11px;color:#333;font-family:Arial,Helvetica,sans-serif;"></div>
     </div>
@@ -267,7 +268,12 @@ function renderProdChart(){
   var now=new Date();
   var cutoff5=(now.getFullYear()-5)+'-01';
   var allM=new Set(Object.keys(prodMap).concat(shellRows.map(function(r){return r.month;})));
-  var spine=[...allM].sort().filter(function(m){return m>=cutoff5;});
+  /* limit spine to months covered by production data — import-only months
+     beyond the last production bulletin would render as invisible bars
+     (below the 280M axis minimum) and corrupt the % line */
+  var prodKeys=Object.keys(prodMap).sort();
+  var lastProdM=prodKeys.length?prodKeys[prodKeys.length-1]:null;
+  var spine=[...allM].sort().filter(function(m){return m>=cutoff5&&(!lastProdM||m<=lastProdM);});
   if(spine.length>=2){var fil=[],c=spine[0],last=spine[spine.length-1];while(c<=last){fil.push(c);var sp=c.split('-'),y=parseInt(sp[0]),mo=parseInt(sp[1])+1;if(mo>12){mo=1;y++;}c=y+'-'+String(mo).padStart(2,'0');}spine=fil;}
   /* ---- aggregate imports per month ---- */
   var impAgg={};
@@ -283,6 +289,9 @@ function renderProdChart(){
     return(p+i)>0?+((i/(p+i))*100).toFixed(3):null;
   });
   if(!prodVals.some(function(v){return v!=null;})){box.style.display='none';return;}
+  /* ---- range note ---- */
+  var noteEl=document.getElementById('prod-range-note');
+  if(noteEl&&lastProdM){noteEl.textContent='Datos de producción Chilehuevos hasta '+fmtM(lastProdM)+'. Los meses posteriores no aparecen por falta de datos de producción.';}
   /* ---- legend ---- */
   document.getElementById('prod-leg').innerHTML=
     '<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:14px;height:14px;border-radius:2px;background:#00456b;display:inline-block"></span> Producción</span>'+
