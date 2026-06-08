@@ -675,34 +675,31 @@ def scrape_produccion_cl():
     data = {}
     now = datetime.now()
 
-    # 1. Buscar el PDF más reciente disponible (mes a mes hacia atrás)
-    recent_content = None
-    for delta in range(0, 24):
-        mo = now.month - delta
-        yr = now.year
-        while mo < 1: mo += 12; yr -= 1
-        recent_content = try_urls(yr, mo)
-        if recent_content:
-            parsed = parse_pdf(recent_content)
-            data.update(parsed)
-            break
+    def fetch_pdf_near(target_yr, target_mo, window=9):
+        """Busca el PDF más cercano a (target_yr, target_mo) en ventana ±window meses."""
+        for delta in range(0, window + 1):
+            for sign in ([0] if delta == 0 else [-1, 1]):
+                mo = target_mo + sign * delta
+                yr = target_yr
+                while mo < 1:  mo += 12; yr -= 1
+                while mo > 12: mo -= 12; yr += 1
+                content = try_urls(yr, mo)
+                if content:
+                    parsed = parse_pdf(content)
+                    if parsed:
+                        return parsed
+        return {}
 
-    # 2. Si el PDF reciente no cubre 5 años, buscar un PDF antiguo para el historial
-    five_years_ago = f"{now.year - 5}-01"
-    if not data or min(data.keys()) > five_years_ago:
-        # Buscar un PDF de hace ~3 años que cubra el período faltante
-        target_yr = now.year - 3
-        for delta in range(0, 18):
-            mo = now.month - delta
-            yr = target_yr
-            while mo < 1: mo += 12; yr -= 1
-            old_content = try_urls(yr, mo)
-            if old_content:
-                parsed = parse_pdf(old_content)
-                for k, v in parsed.items():
-                    if k not in data:
-                        data[k] = v
-                break
+    # Anclas en now, now-2, now-4 para cubrir ~5 años.
+    # Buscar en ventana ±9 meses alrededor de cada ancla (no solo hacia atrás)
+    # para no perderse PDFs publicados después del mes ancla.
+    for offset in [0, 1, 2, 4]:
+        anchor_yr = now.year - offset
+        anchor_mo = now.month
+        pdf_data = fetch_pdf_near(anchor_yr, anchor_mo, window=9)
+        for k, v in pdf_data.items():
+            if k not in data:
+                data[k] = v
 
     return data
 
