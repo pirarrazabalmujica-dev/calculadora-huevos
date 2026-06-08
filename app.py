@@ -119,17 +119,29 @@ def _parse_anual_pdf(pdf_bytes, year):
     except: pass
     return records
 
-def _brasil_proconsp():
-    """Procon-SP — descubre PDFs via WP API, parsea Ovos Brancos dúzia — varejo SP"""
+def _brasil_proconsp(on_status=None):
+    """Procon-SP — descubre PDFs via WP API, parsea Ovos Brancos dúzia — varejo SP.
+    on_status(msg): callback opcional para reportar progreso a la UI.
+    """
+    def _log(msg):
+        if on_status: on_status(msg)
+
+    _log("🔍 Consultando API Procon-SP...")
     try:
         r=requests.get(
-            "https://www.procon.sp.gov.br/wp-json/wp/v2/posts?search=cesta+basica&per_page=40&orderby=date&order=desc",
-            headers=HEADERS,timeout=15)
+            "https://www.procon.sp.gov.br/wp-json/wp/v2/posts?search=cesta+basica&per_page=8&orderby=date&order=desc",
+            headers=HEADERS, timeout=12)
         posts=r.json()
         if not isinstance(posts,list): posts=[]
-    except: posts=[]
-    records=[]; seen_pdfs=set()
-    for post in posts:
+    except: posts=[]; _log("⚠️ No se pudo conectar con Procon-SP")
+
+    records=[]; seen_pdfs=set(); monthly_found=0; pdf_n=0
+    MAX_MONTHLY=6
+    total=len(posts)
+
+    for i, post in enumerate(posts):
+        if monthly_found >= MAX_MONTHLY:
+            break
         try:
             pub_date=pd.Timestamp(post["date"][:10])
             data_date=pub_date-pd.DateOffset(months=1)
@@ -140,17 +152,23 @@ def _brasil_proconsp():
                      and not any(x in u.lower() for x in ['arroz','planilha','pesquisa','coleta'])
                      and u not in seen_pdfs]
             if not cb_pdfs: continue
-            pdf_url=cb_pdfs[0]; seen_pdfs.add(pdf_url)
-            r2=requests.get(pdf_url,headers=HEADERS,timeout=15)
-            if r2.status_code!=200 or len(r2.content)<5000: continue
-            # PDFs anuais (CBAnual24.pdf, CB-Anual-25.pdf, CB_Anual_23.pdf)
-            # NO confundir con mensuales que tienen "comparativo-anual" en el nombre
-            if re.search(r'/CB[-_]?Anual[-_]?\d{2}\.pdf', pdf_url, re.IGNORECASE):
-                anual_year=pub_date.year-1  # report publicado en enero del año siguiente
+            pdf_url=cb_pdfs[0]; seen_pdfs.add(pdf_url); pdf_n+=1
+            filename=pdf_url.split("/")[-1]
+            is_anual=bool(re.search(r'/CB[-_]?Anual[-_]?\d{2}\.pdf', pdf_url, re.IGNORECASE))
+            tipo="anual" if is_anual else f"{data_year}-{data_month:02d}"
+            _log(f"📄 PDF {pdf_n} de ~{total}: `{filename}` ({tipo}) — descargando…")
+            r2=requests.get(pdf_url, headers=HEADERS, timeout=12)
+            if r2.status_code!=200 or len(r2.content)<5000:
+                _log(f"⚠️ `{filename}` no disponible (HTTP {r2.status_code})")
+                continue
+            kb=len(r2.content)//1024
+            _log(f"🔎 `{filename}` ({kb} KB) — parseando…")
+            if is_anual:
+                anual_year=pub_date.year-1
                 annual_records=_parse_anual_pdf(r2.content, anual_year)
                 records.extend(annual_records)
+                _log(f"✅ `{filename}` — {len(annual_records)} meses extraídos")
                 continue
-            # PDF mensual normal
             with pdfplumber.open(BytesIO(r2.content)) as pdf:
                 for page in pdf.pages:
                     text=page.extract_text() or ""
@@ -162,15 +180,34 @@ def _brasil_proconsp():
                             records.append({"mes":f"{data_year}-{data_month:02d}",
                                 "fecha":pd.Timestamp(f"{data_year}-{data_month:02d}-01"),
                                 "precio_brl":round(curr/12,4)})
+                            monthly_found+=1
+                            _log(f"✅ `{filename}` — R$ {curr:.2f}/docena ({data_year}-{data_month:02d})")
                             break
-        except: continue
+        except Exception as exc:
+            _log(f"⚠️ Error en post {i+1}: {exc}")
+            continue
+    _log(f"🏁 Brasil listo — {len(records)} registros")
     return records
 
-@st.cache_data(ttl=43200)
-def scrape_brasil():
-    """Procon-SP — Ovos Brancos dúzia — varejo São Paulo — retail consumidor"""
-    records=_brasil_proconsp()
-    if not records: return None,"Sin datos Brasil"
+# Caché manual en session_state para poder mostrar progreso en la primera carga
+_BRASIL_TTL = 43200  # 12 h en segundos
+
+def scrape_brasil(on_status=None):
+    """Procon-SP con caché en session_state (12 h) y progreso opcional."""
+    key_data="brasil_data"; key_ts="brasil_ts"
+    now=datetime.now().timestamp()
+    cached_ts=st.session_state.get(key_ts,0)
+    if now-cached_ts < _BRASIL_TTL and key_data in st.session_state:
+        return st.session_state[key_data]
+    records=_brasil_proconsp(on_status=on_status)
+    if not records:
+        result=(None,"Sin datos Brasil")
+    else:
+        df=pd.DataFrame(records).drop_duplicates("mes").sort_values("mes").reset_index(drop=True)
+        result=(df,"Procon-SP varejo")
+    st.session_state[key_data]=result
+    st.session_state[key_ts]=now
+    return result
     df=pd.DataFrame(records).drop_duplicates("mes").sort_values("mes").reset_index(drop=True)
     return df,"Procon-SP varejo"
 
@@ -364,14 +401,22 @@ def render_menu():
     </div>
     """, unsafe_allow_html=True)
 
+    _CARD = (
+        "background:#0f1829;border:1px solid #2a3a5c;border-radius:16px;"
+        "padding:40px 36px;text-align:center;"
+    )
+    _ICON = "font-size:52px;margin-bottom:16px;"
+    _TITLE = "font-size:1.4rem;font-weight:800;color:#e8e6e1;margin-bottom:8px;font-family:'Syne',sans-serif;"
+    _DESC = "font-size:12px;color:#4a5568;line-height:1.7;font-family:'JetBrains Mono',monospace;"
+
     col1, col2 = st.columns(2, gap="large")
 
     with col1:
-        st.markdown("""
-        <div class="menu-card" id="card-precios">
-            <div class="menu-card-icon">📈</div>
-            <div class="menu-card-title">Precios internacionales</div>
-            <div class="menu-card-desc">
+        st.markdown(f"""
+        <div style="{_CARD}">
+            <div style="{_ICON}">📈</div>
+            <div style="{_TITLE}">Precios internacionales</div>
+            <div style="{_DESC}">
                 Monitoreo en tiempo real del precio del huevo en<br>
                 Brasil · Argentina · Chile · USA<br><br>
                 Fuentes: Procon-SP · INDEC · ODEPA · FRED/BLS<br>
@@ -379,16 +424,16 @@ def render_menu():
             </div>
         </div>
         """, unsafe_allow_html=True)
-        if st.button("Abrir →", key="btn_precios", use_container_width=True):
+        if st.button("📈  Abrir Precios internacionales", key="btn_precios", use_container_width=True):
             st.session_state.seccion = "precios"
             st.rerun()
 
     with col2:
-        st.markdown("""
-        <div class="menu-card" id="card-imp">
-            <div class="menu-card-icon">🚢</div>
-            <div class="menu-card-title">Importaciones a Chile</div>
-            <div class="menu-card-desc">
+        st.markdown(f"""
+        <div style="{_CARD}">
+            <div style="{_ICON}">🚢</div>
+            <div style="{_TITLE}">Importaciones a Chile</div>
+            <div style="{_DESC}">
                 Análisis de tendencias de importación<br>
                 Partidas arancelarias 407xx y 408xx<br><br>
                 Sube archivos mensuales de aduana · Historial acumulado<br>
@@ -396,7 +441,7 @@ def render_menu():
             </div>
         </div>
         """, unsafe_allow_html=True)
-        if st.button("Abrir →", key="btn_imp", use_container_width=True):
+        if st.button("🚢  Abrir Importaciones a Chile", key="btn_imp", use_container_width=True):
             st.session_state.seccion = "importaciones"
             st.rerun()
 
@@ -425,9 +470,30 @@ def render_precios():
     </div>
     """, unsafe_allow_html=True)
 
-    with st.spinner("Cargando datos..."):
-        fx=get_fx(); df_br,e_br=scrape_brasil(); df_ar,e_ar=scrape_argentina()
-        df_cl,e_cl=scrape_chile(); df_us,e_us=scrape_usa()
+    # Detectar si Brasil ya está en caché para no mostrar el status innecesariamente
+    _br_cached = (datetime.now().timestamp() - st.session_state.get("brasil_ts",0)) < _BRASIL_TTL
+
+    if _br_cached:
+        # Todo cacheado → carga instantánea
+        with st.spinner("Cargando datos..."):
+            fx=get_fx()
+            df_br,e_br=scrape_brasil()
+            df_ar,e_ar=scrape_argentina()
+            df_cl,e_cl=scrape_chile()
+            df_us,e_us=scrape_usa()
+    else:
+        # Primera carga del día → mostrar progreso detallado
+        fx=get_fx()
+        with st.status("⏳ Descargando datos de mercado…", expanded=True) as status:
+            status.update(label="🇧🇷 Descargando PDFs Procon-SP…")
+            df_br,e_br=scrape_brasil(on_status=lambda msg: status.update(label=msg))
+            status.update(label="🇦🇷 Descargando INDEC Argentina…")
+            df_ar,e_ar=scrape_argentina()
+            status.update(label="🇨🇱 Descargando ODEPA Chile…")
+            df_cl,e_cl=scrape_chile()
+            status.update(label="🇺🇸 Descargando USDA / FRED USA…")
+            df_us,e_us=scrape_usa()
+            status.update(label="✅ Datos cargados", state="complete", expanded=False)
 
     with st.sidebar:
         st.markdown("### ⚙️ Opciones")
@@ -560,6 +626,74 @@ def render_precios():
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN: IMPORTACIONES
 # ══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=86400)
+def scrape_produccion_cl():
+    """Chilehuevos — producción mensual total de huevos Chile (boletines PDF)"""
+    MES = {'ene':1,'feb':2,'mar':3,'abr':4,'may':5,'jun':6,
+           'jul':7,'ago':8,'sep':9,'oct':10,'nov':11,'dic':12}
+    NOMBRES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+               'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+
+    def parse_pdf(content):
+        """Extrae {YYYY-MM: total_huevos} de un boletín PDF."""
+        result = {}
+        try:
+            with pdfplumber.open(BytesIO(content)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text() or ""
+                    for line in text.split("\n"):
+                        m = re.match(
+                            r'(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)'
+                            r'-(\d{2})\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)',
+                            line.strip(), re.IGNORECASE)
+                        if m:
+                            mes_num = MES.get(m.group(1).lower(), 0)
+                            anio = int('20' + m.group(2))
+                            total = int(m.group(6).replace('.',''))
+                            if mes_num and 50_000_000 < total < 800_000_000:
+                                result[f"{anio}-{mes_num:02d}"] = total
+        except Exception:
+            pass
+        return result
+
+    def try_urls(year, month):
+        nombre = NOMBRES[month-1]
+        base = "https://www.chilehuevos.cl/storage"
+        paths = [
+            f"{base}/boletines/Bolet%C3%ADn%20Chilehuevos%20-%20{nombre}%20{year}.pdf",
+            f"{base}/Bolet%C3%ADn%20Chilehuevos%20-%20{nombre}%20{year}.pdf",
+        ]
+        for url in paths:
+            try:
+                r = requests.get(url, headers=HEADERS, timeout=15)
+                if r.status_code == 200 and len(r.content) > 10_000:
+                    return r.content
+            except Exception:
+                pass
+        return None
+
+    data = {}
+    now = datetime.now()
+
+    # Intentar desde el mes actual hacia atrás hasta encontrar 2 PDFs con datos
+    found = 0
+    for delta in range(0, 36):
+        mo = now.month - delta
+        yr = now.year
+        while mo < 1:
+            mo += 12; yr -= 1
+        content = try_urls(yr, mo)
+        if content:
+            parsed = parse_pdf(content)
+            for k, v in parsed.items():
+                if k not in data:
+                    data[k] = v
+            found += 1
+            if found >= 2 and min(data.keys()) <= f"{now.year-2}-01":
+                break
+
+    return data
+
 def render_importaciones():
     if st.button("← Volver al menú", key="back_imp"):
         st.session_state.seccion = "menu"
@@ -572,13 +706,60 @@ def render_importaciones():
     """, unsafe_allow_html=True)
 
     html_path = os.path.join(os.path.dirname(__file__), "importaciones.html")
-    if os.path.exists(html_path):
-        with open(html_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
-        components.html(html_content, height=860, scrolling=True)
-    else:
+    if not os.path.exists(html_path):
         st.error("⚠️ No se encontró el archivo `importaciones.html` en la misma carpeta que `app.py`.")
         st.info("Asegúrate de que ambos archivos estén en la misma carpeta.")
+        return
+
+    with open(html_path, "r", encoding="utf-8") as f:
+        html_content = f.read()
+
+    # Datos de producción nacional (Chilehuevos) — inyectados como variable JS
+    import json as _json
+    prod_data = scrape_produccion_cl()
+    prod_script = f'<script>var PRODUCCION_CL={_json.dumps(prod_data)};</script>'
+
+    inline_cache_path = os.path.join(os.path.dirname(__file__), "html_b64.txt")
+    # Si tenemos las librerías cacheadas inline, usarlas (inyectar prod_data igual)
+    if os.path.exists(inline_cache_path):
+        try:
+            import base64
+            cached = base64.b64decode(open(inline_cache_path, "rb").read()).decode("utf-8")
+            cached = cached.replace("</head>", prod_script + "</head>", 1)
+            components.html(cached, height=900, scrolling=True)
+            return
+        except Exception:
+            pass
+
+    # Intentar descargar e inlinear los scripts
+    try:
+        import re as _re
+        def _inline_script(match):
+            src = match.group(1)
+            try:
+                r = requests.get(src, timeout=15)
+                if r.status_code == 200:
+                    return f"<script>{r.text}</script>"
+            except Exception:
+                pass
+            return match.group(0)
+
+        patched = _re.sub(
+            r'<script src="([^"]+)"[^>]*></script>',
+            _inline_script,
+            html_content,
+        )
+        try:
+            import base64
+            open(inline_cache_path, "wb").write(base64.b64encode(patched.encode("utf-8")))
+        except Exception:
+            pass
+        patched = patched.replace("</head>", prod_script + "</head>", 1)
+        components.html(patched, height=900, scrolling=True)
+    except Exception as e:
+        st.warning(f"⚠️ No se pudieron inlinear los scripts externos: {e}.")
+        html_content = html_content.replace("</head>", prod_script + "</head>", 1)
+        components.html(html_content, height=900, scrolling=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUTER PRINCIPAL
