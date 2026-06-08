@@ -720,6 +720,10 @@ def render_importaciones():
     prod_script = f'<script>var PRODUCCION_CL={_json.dumps(prod_data)};</script>'
 
     inline_cache_path = os.path.join(os.path.dirname(__file__), "html_b64.txt")
+    # Invalidar caché si importaciones.html es más nuevo que el caché
+    if os.path.exists(inline_cache_path) and os.path.exists(html_path):
+        if os.path.getmtime(html_path) > os.path.getmtime(inline_cache_path):
+            os.remove(inline_cache_path)
     # Si tenemos las librerías cacheadas inline, usarlas (inyectar prod_data igual)
     if os.path.exists(inline_cache_path):
         try:
