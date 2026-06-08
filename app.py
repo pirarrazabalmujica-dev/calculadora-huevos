@@ -743,7 +743,9 @@ def render_importaciones():
             try:
                 r = requests.get(src, timeout=15)
                 if r.status_code == 200:
-                    return f"<script>{r.text}</script>"
+                    # Escapar </script> dentro del JS para no romper el parser HTML
+                    safe = r.text.replace("</script>", "<\\/script>")
+                    return f"<script>{safe}</script>"
             except Exception:
                 pass
             return match.group(0)
