@@ -119,10 +119,10 @@ tr:hover td{background:var(--surf2);}
       <div class="cw"><canvas id="mc"></canvas></div>
     </div>
     <!-- Gráfico importaciones vs producción -->
-    <div id="prod-box" class="chart-box" style="margin-top:14px;display:none">
-      <div style="font-size:9px;color:var(--muted);letter-spacing:1.5px;margin-bottom:10px">🥚 IMPORTACIONES vs PRODUCCIÓN NACIONAL</div>
-      <div id="prod-leg" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px;font-size:9px;color:var(--muted)"></div>
-      <div class="cw"><canvas id="prod-mc"></canvas></div>
+    <div id="prod-box" style="margin-top:14px;display:none;background:#fff;border:1px solid #d0d0d0;border-radius:10px;padding:16px 14px 10px;font-family:Arial,Helvetica,sans-serif;">
+      <div id="prod-title" style="font-size:15px;font-weight:700;color:#00456b;margin-bottom:14px;text-align:left;">Producción Nacional vs Importaciones de Huevos (millones de unidades)</div>
+      <div style="position:relative;width:100%;height:340px;"><canvas id="prod-mc"></canvas></div>
+      <div id="prod-leg" style="display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-top:12px;font-size:11px;color:#333;font-family:Arial,Helvetica,sans-serif;"></div>
     </div>
   </div>
 </div>
@@ -248,54 +248,73 @@ function getCutoff(){var d=new Date();var y=d.getFullYear(),m=d.getMonth();if(cu
 function getFilteredRows(){var pais=document.getElementById('fP').value;var variedad=document.getElementById('fV').value;var tipo=document.getElementById('fT').value;var cutoff=getCutoff();return rows.filter(function(r){if(pais!=='all'&&r.pais!==pais)return false;if(variedad!=='all'&&r.variedad!==variedad)return false;if(tipo!=='all'&&r.tipo!==tipo)return false;if(cutoff&&r.month<cutoff)return false;return true;});}
 function renderChart(){if(!rows.length)return;document.getElementById('nd0').style.display='none';document.getElementById('cs').style.display='';var fr=getFilteredRows();var allCodes=[...new Set(rows.map(function(r){return r.code;}))].sort();var visCodes=selCodes.filter(function(c){return fr.some(function(r){return r.code===c;});});var mDef=METRICS.find(function(m){return m.k===curMetric;});function periodKey(month){if(groupBy==='M')return month;var p=month.split('-');var y=p[0];var mo=parseInt(p[1]);var q=Math.ceil(mo/3);return y+'-Q'+q;}function periodLabel(key){if(groupBy==='M')return fmtM(key);var p=key.split('-Q');return'Q'+p[1]+' '+p[0];}var allDataMonths=[...new Set(rows.map(function(r){return r.month;}))].sort();var cutoff=getCutoff();var spineMonths=allDataMonths.filter(function(m){return!cutoff||m>=cutoff;});if(spineMonths.length>=2){var filled=[];var cur=spineMonths[0];var last=spineMonths[spineMonths.length-1];while(cur<=last){filled.push(cur);var sp=cur.split('-');var y=parseInt(sp[0]);var mo=parseInt(sp[1]);mo++;if(mo>12){mo=1;y++;}cur=y+'-'+String(mo).padStart(2,'0');}spineMonths=filled;}var periods=[];var seen={};spineMonths.forEach(function(m){var k=periodKey(m);if(!seen[k]){seen[k]=true;periods.push(k);}});var agg={};fr.forEach(function(r){var pk=periodKey(r.month);var k=r.code+'|'+pk;if(!agg[k])agg[k]={kg:0,fob:0,cif:0,eggs:0};agg[k].kg+=r.kg;agg[k].fob+=r.fob;agg[k].cif+=r.cif;agg[k].eggs+=r.eggs;});Object.keys(agg).forEach(function(k){var a=agg[k];a.cajas=(a.eggs>0)?+(a.eggs/180).toFixed(1):null;a.pxh=(a.eggs>=360)?+(a.cif/a.eggs).toFixed(6):null;a.pxkg=(a.kg>=10)?+(a.cif/a.kg).toFixed(4):null;});var datasets=[];visCodes.forEach(function(code){var ci=allCodes.indexOf(code),color=COLORS[ci%COLORS.length];var isPrice=(curMetric==='pxkg'||curMetric==='pxh');var data=periods.map(function(pk){var a=agg[code+'|'+pk];if(!a)return isPrice?null:0;var v=a[curMetric];return v==null?null:+parseFloat(v).toFixed(4);});datasets.push({label:code,data:data,borderColor:color,backgroundColor:color+'25',borderWidth:2,pointRadius:groupBy==='M'?2:4,pointBackgroundColor:color,tension:.3,spanGaps:true});if(trendOn&&periods.length>1){var tr=linReg(data.map(function(v){return v==null?0:v;}));datasets.push({label:'_t'+code,data:tr,borderColor:color,borderWidth:1,borderDash:[6,4],pointRadius:0,tension:0,spanGaps:true});}});var sr=fr.filter(function(r){return selCodes.indexOf(r.code)!==-1;});var tKg=sr.reduce(function(s,r){return s+r.kg;},0);var tFob=sr.reduce(function(s,r){return s+r.fob;},0);var tCif=sr.reduce(function(s,r){return s+r.cif;},0);var tEggs=sr.filter(function(r){return r.shell;}).reduce(function(s,r){return s+r.eggs;},0);var pxh=tEggs>0?tCif/tEggs:null;var pxkg=tKg>0?tCif/tKg:null;var sg=document.getElementById('sg');sg.innerHTML='';var stats=[['TOTAL KG',N(tKg)+' kg','var(--blue)'],['CIF','US$ '+N(tCif,0),'var(--green)']];if(tEggs>0)stats.push(['HUEVOS (EST.)',N(tEggs),'var(--acc)']);if(pxh!=null)stats.push(['US$/HUEVO','US$ '+N(pxh,4),'var(--purple)']);if(pxkg!=null)stats.push(['US$/KG','US$ '+N(pxkg,3),'var(--blue)']);stats.push(['MESES',[...new Set(rows.map(function(r){return r.month;}))].length,'var(--muted)']);stats.push(['PARTIDAS',allCodes.length,'var(--muted)']);stats.forEach(function(s){sg.innerHTML+='<div class="sc"><div class="sc-l">'+s[0]+'</div><div class="sc-v" style="color:'+s[2]+'">'+s[1]+'</div></div>';});var leg=document.getElementById('leg');leg.innerHTML='';visCodes.forEach(function(code){var ci=allCodes.indexOf(code),color=COLORS[ci%COLORS.length];var rr=rows.find(function(r){return r.code===code;});var nm=rr&&rr.nombre?rr.nombre.split(' ').slice(0,4).join(' '):'';leg.innerHTML+='<span style="display:inline-flex;align-items:center;gap:5px;margin:2px 6px 2px 0"><span style="width:10px;height:3px;border-radius:1px;background:'+color+'"></span><b style="color:'+color+'">'+code+'</b> '+nm+'</span>';});if(chart)chart.destroy();chart=new Chart(document.getElementById('mc'),{type:'line',data:{labels:periods.map(periodLabel),datasets:datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{display:false},tooltip:{backgroundColor:'#060a14',borderColor:'#1a2744',borderWidth:1,titleColor:'#F59E0B',titleFont:{family:'DM Mono,monospace',size:11},bodyColor:'#cbd5e1',bodyFont:{family:'DM Mono,monospace',size:11},callbacks:{label:function(item){if(item.dataset.label&&item.dataset.label.startsWith('_t'))return null;return' '+item.dataset.label+': '+mDef.f(item.raw);},filter:function(item){return!(item.dataset.label&&item.dataset.label.startsWith('_t'));}}}},scales:{x:{ticks:{color:'#3a5580',font:{family:'DM Mono,monospace',size:10},maxRotation:45},grid:{color:'#0f1e38'},border:{color:'#1a2744'}},y:{ticks:{color:'#3a5580',font:{family:'DM Mono,monospace',size:10},callback:function(v){return v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'k':v;}},grid:{color:'#0f1e38'},border:{color:'#1a2744'}}}}});renderProdChart();}
 var prodChart=null;
+var MES_A=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function fmtShort(m){var p=m.split('-');return MES_A[parseInt(p[1])-1]+'-'+p[0].slice(2);}
 function renderProdChart(){
   var prodMap=window.PRODUCCION_CL||{};
   var box=document.getElementById('prod-box');
   var shellRows=rows.filter(function(r){return r.shell;});
   if(!shellRows.length||!Object.keys(prodMap).length){box.style.display='none';if(prodChart){prodChart.destroy();prodChart=null;}return;}
   box.style.display='';
-  /* ---- 5-year time spine, independent of top chart range ---- */
+  /* ---- 5-year monthly spine (always monthly, independent of top chart) ---- */
   var now=new Date();
-  var cutoff5=(now.getFullYear()-5)+'-'+String(now.getMonth()+1).padStart(2,'0');
+  var cutoff5=(now.getFullYear()-5)+'-01';
   var allM=new Set(Object.keys(prodMap).concat(shellRows.map(function(r){return r.month;})));
   var spine=[...allM].sort().filter(function(m){return m>=cutoff5;});
   if(spine.length>=2){var fil=[],c=spine[0],last=spine[spine.length-1];while(c<=last){fil.push(c);var sp=c.split('-'),y=parseInt(sp[0]),mo=parseInt(sp[1])+1;if(mo>12){mo=1;y++;}c=y+'-'+String(mo).padStart(2,'0');}spine=fil;}
-  /* ---- period keys (respects top-chart groupBy setting) ---- */
-  function pk2(m){if(groupBy==='M')return m;var p=m.split('-');return p[0]+'-Q'+Math.ceil(parseInt(p[1])/3);}
-  function pl2(k){if(groupBy==='M')return fmtM(k);var p=k.split('-Q');return'Q'+p[1]+' '+p[0];}
-  var periods2=[],seen2={};
-  spine.forEach(function(m){var k=pk2(m);if(!seen2[k]){seen2[k]=true;periods2.push(k);}});
-  /* ---- aggregate imports (all shell rows, no filter) ---- */
+  /* ---- aggregate imports per month ---- */
   var impAgg={};
-  shellRows.forEach(function(r){var k=pk2(r.month);impAgg[k]=(impAgg[k]||0)+r.eggs;});
-  /* ---- build values ---- */
-  var impVals=periods2.map(function(k){var v=impAgg[k];return v?+(v/1e6).toFixed(3):null;});
-  var prodVals=periods2.map(function(k){
-    if(groupBy==='M'){var v=prodMap[k];return v?+(v/1e6).toFixed(2):null;}
-    var pts=k.split('-Q'),q=parseInt(pts[1]),sum=0,cnt=0;
-    for(var mo=(q-1)*3+1;mo<=q*3;mo++){var mk=pts[0]+'-'+String(mo).padStart(2,'0');if(prodMap[mk]){sum+=prodMap[mk];cnt++;}}
-    return cnt?+(sum/1e6).toFixed(2):null;
+  shellRows.forEach(function(r){impAgg[r.month]=(impAgg[r.month]||0)+r.eggs;});
+  /* ---- build series (absolute units) ---- */
+  var labels=spine.map(fmtShort);
+  var prodVals=spine.map(function(m){return prodMap[m]||null;});
+  var impVals=spine.map(function(m){return impAgg[m]||null;});
+  var pctVals=spine.map(function(m){
+    var p=prodMap[m]||0, i=impAgg[m]||0;
+    return(p+i)>0?+((i/(p+i))*100).toFixed(3):null;
   });
-  if(!prodVals.some(function(v){return v!=null;})&&!impVals.some(function(v){return v!=null;})){box.style.display='none';return;}
+  if(!prodVals.some(function(v){return v!=null;})){box.style.display='none';return;}
   /* ---- legend ---- */
   document.getElementById('prod-leg').innerHTML=
-    '<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:2px;background:#3B82F640;border:1px solid #3B82F6"></span><b style="color:#3B82F6">🐔 Producción CL</b></span>'+
-    '<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:10px;height:3px;border-radius:1px;background:#F59E0B"></span><b style="color:#F59E0B">🚢 Importadas</b></span>';
-  /* ---- chart config ---- */
-  var T={backgroundColor:'#060a14',borderColor:'#1a2744',borderWidth:1,titleColor:'#F59E0B',titleFont:{family:'DM Mono,monospace',size:11},bodyColor:'#cbd5e1',bodyFont:{family:'DM Mono,monospace',size:11},
-    callbacks:{label:function(item){var v=item.raw;return' '+item.dataset.label+': '+(v!=null?v.toFixed(item.datasetIndex===0?1:3)+' M':'—');}}};
-  var S={x:{ticks:{color:'#3a5580',font:{family:'DM Mono,monospace',size:10},maxRotation:45},grid:{color:'#0f1e38'},border:{color:'#1a2744'}},
-    y:{ticks:{color:'#3a5580',font:{family:'DM Mono,monospace',size:10},callback:function(v){return v.toFixed(0)+'M';}},grid:{color:'#0f1e38'},border:{color:'#1a2744'},
-      title:{display:true,text:'Millones de huevos',color:'#3a5580',font:{family:'DM Mono,monospace',size:9}}}};
+    '<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:14px;height:14px;border-radius:2px;background:#00456b;display:inline-block"></span> Producción</span>'+
+    '<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:14px;height:14px;border-radius:2px;background:#f58220;display:inline-block"></span> Importación</span>'+
+    '<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:20px;height:2px;background:#e3000f;display:inline-block"></span> % de importados</span>';
+  /* ---- chart ---- */
+  var FONT={family:'Arial,Helvetica,sans-serif',size:10};
+  var GRID='rgba(0,0,0,0.08)';
+  var TICK='#555';
+  var TT={backgroundColor:'#fff',borderColor:'#ccc',borderWidth:1,titleColor:'#222',titleFont:{family:'Arial,Helvetica,sans-serif',size:11},bodyColor:'#333',bodyFont:{family:'Arial,Helvetica,sans-serif',size:11},
+    callbacks:{label:function(item){
+      if(item.dataset.yAxisID==='y1')return' '+item.dataset.label+': '+(item.raw!=null?item.raw.toFixed(2)+'%':'—');
+      return' '+item.dataset.label+': '+(item.raw!=null?(item.raw/1e6).toFixed(1)+' M':'—');
+    }}};
   if(prodChart)prodChart.destroy();
   prodChart=new Chart(document.getElementById('prod-mc'),{
     type:'bar',
-    data:{labels:periods2.map(pl2),datasets:[
-      {label:'🐔 Producción CL',type:'bar',data:prodVals,backgroundColor:'#3B82F628',borderColor:'#3B82F6',borderWidth:1,borderRadius:2,borderSkipped:false},
-      {label:'🚢 Importadas',type:'line',data:impVals,borderColor:'#F59E0B',backgroundColor:'#F59E0B00',borderWidth:2.5,pointRadius:3,pointBackgroundColor:'#F59E0B',tension:.3,spanGaps:true}
+    data:{labels:labels,datasets:[
+      {label:'Producción',type:'bar',data:prodVals,backgroundColor:'#00456b',stack:'s',yAxisID:'y',order:2},
+      {label:'Importación',type:'bar',data:impVals,backgroundColor:'#f58220',stack:'s',yAxisID:'y',order:2},
+      {label:'% de importados',type:'line',data:pctVals,borderColor:'#e3000f',backgroundColor:'transparent',borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:.3,spanGaps:true,yAxisID:'y1',order:1}
     ]},
-    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{display:false},tooltip:T},scales:S}});
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{legend:{display:false},tooltip:TT},
+      scales:{
+        x:{stacked:true,
+          ticks:{color:TICK,font:FONT,maxRotation:90,minRotation:90},
+          grid:{color:GRID},border:{color:'#ccc'}},
+        y:{stacked:true,
+          min:280000000,max:480000000,
+          ticks:{color:TICK,font:FONT,stepSize:20000000,callback:function(v){return(v/1e6).toFixed(0)+'M';}},
+          grid:{color:GRID},border:{color:'#ccc'}},
+        y1:{position:'right',
+          min:0,max:5,
+          ticks:{color:'#e3000f',font:FONT,stepSize:0.5,callback:function(v){return v.toFixed(1)+'%';}},
+          grid:{drawOnChartArea:false},border:{color:'#ccc'}}
+      }
+    }
+  });
 }
 function renderEggTable(){var sr=rows.filter(function(r){return r.shell;});sr=sr.sort(function(a,b){return b.month.localeCompare(a.month)||a.code.localeCompare(b.code);});if(!sr.length)return;document.getElementById('nd1').style.display='none';document.getElementById('es').style.display='';var codes=[...new Set(rows.map(function(r){return r.code;}))].sort();document.getElementById('etb').innerHTML=sr.map(function(r){var ci=codes.indexOf(r.code),color=COLORS[ci%COLORS.length];return'<tr><td style="color:var(--acc)">'+fmtM(r.month)+'</td><td style="color:'+color+';font-weight:700">'+r.code+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">'+r.nombre+'</td><td style="color:var(--muted)">'+r.tipo+'</td><td>'+N(r.kg)+'</td><td style="color:'+(r.g?'var(--green)':'var(--red)')+'">'+( r.g?r.g.toFixed(1):'—')+'</td><td style="color:var(--muted)">'+(r.est?N(r.est):'—')+'</td><td style="color:var(--purple)">'+(r.mult?'×'+r.mult:'—')+'</td><td style="font-weight:700;color:var(--acc)">'+(r.eggs>0?N(r.eggs):'—')+'</td><td style="color:var(--muted)">'+N(r.fob,0)+'</td></tr>';}).join('');}
 function renderLoadSummary(dataRows){var months=[...new Set(dataRows.map(function(r){return r.month;}))].sort();var sg=document.getElementById('sumSG');sg.innerHTML='';[['MESES',months.length,'var(--blue)'],['PARTIDAS',[...new Set(dataRows.map(function(r){return r.code;}))].length,'var(--acc)'],['FILAS',dataRows.length,'var(--green)'],['PRIMER MES',fmtM(months[0]),'var(--muted)'],['ÚLTIMO MES',fmtM(months[months.length-1]),'var(--muted)']].forEach(function(s){sg.innerHTML+='<div class="sc"><div class="sc-l">'+s[0]+'</div><div class="sc-v" style="color:'+s[2]+';font-size:13px">'+s[1]+'</div></div>';});document.getElementById('moPills').innerHTML=months.map(function(m){return'<span style="background:var(--bg);border:1px solid var(--brd);border-radius:4px;padding:3px 8px;font-size:9px;color:var(--blue);margin:2px;display:inline-block">'+fmtM(m)+'</span>';}).join('');}
