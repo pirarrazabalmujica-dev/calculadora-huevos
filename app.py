@@ -727,6 +727,50 @@ def scrape_produccion_cl():
                         key = f"{anio}-{mes_num:02d}"
                         if key not in result:
                             result[key] = candidates[0][1]
+                # -- Tabla cruzada: Mes-fila x Año-columna (valores en miles) --
+                # Captura proyecciones de produccion para meses futuros del año actual
+                try:
+                    yr_cols = [(int(_tt.strip()), (_bb[0][0]+_bb[1][0])/2)
+                               for _bb, _tt, _cc in items
+                               if _cc > 0.5 and re.match(r'^20\d{2}$', _tt.strip())]
+                    if yr_cols:
+                        latest_yr = max(x[0] for x in yr_cols)
+                        if 2021 <= latest_yr <= 2035:
+                            cx_list = list(set(x[1] for x in yr_cols if x[0] == latest_yr))
+                            MES_FULL = {'enero':1,'febrero':2,'marzo':3,'abril':4,'mayo':5,
+                                        'junio':6,'julio':7,'agosto':8,'septiembre':9,
+                                        'octubre':10,'noviembre':11,'diciembre':12}
+                            for _bb, _tt, _cc in items:
+                                if _cc < 0.4:
+                                    continue
+                                mn = _tt.strip().lower()
+                                if mn not in MES_FULL:
+                                    continue
+                                mes_num_f = MES_FULL[mn]
+                                my = (_bb[0][1] + _bb[2][1]) / 2
+                                for cx in cx_list:
+                                    bv, bdx = None, 999
+                                    for _b2, _t2, _c2 in items:
+                                        if _c2 < 0.3:
+                                            continue
+                                        y2 = (_b2[0][1] + _b2[2][1]) / 2
+                                        if abs(y2 - my) > 20:
+                                            continue
+                                        x2 = (_b2[0][0] + _b2[1][0]) / 2
+                                        dx = abs(x2 - cx)
+                                        if dx > 60:
+                                            continue
+                                        ns = re.sub(r'[^0-9]', '', _t2)
+                                        if 4 <= len(ns) <= 7 and dx < bdx:
+                                            v = int(ns) * 1000
+                                            if 100_000_000 < v < 600_000_000:
+                                                bv, bdx = v, dx
+                                    if bv is not None:
+                                        k2 = f"{latest_yr}-{mes_num_f:02d}"
+                                        if k2 not in result:
+                                            result[k2] = bv
+                except Exception:
+                    pass
         except Exception:
             pass
         return result
