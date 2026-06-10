@@ -127,7 +127,7 @@ tr:hover td{background:var(--surf2);}
     <div id="prod-box" style="margin-top:14px;display:none;background:#fff;border:1px solid #d0d0d0;border-radius:10px;padding:16px 14px 10px;font-family:Arial,Helvetica,sans-serif;">
       <div id="prod-title" style="font-size:15px;font-weight:700;color:#00456b;margin-bottom:14px;text-align:left;">Producción Nacional vs Importaciones de Huevos (millones de unidades)</div>
       <div id="prod-range-note" style="font-size:10px;color:#888;margin-top:-10px;margin-bottom:10px;text-align:left;"></div>
-      <div style="position:relative;width:100%;height:340px;"><canvas id="prod-mc"></canvas></div>
+      <div style="position:relative;width:100%;height:500px;"><canvas id="prod-mc"></canvas></div>
       <div id="prod-leg" style="display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-top:12px;font-size:11px;color:#333;font-family:Arial,Helvetica,sans-serif;"></div>
     </div>
   </div>
@@ -308,6 +308,7 @@ function renderProdChart(){
   /* ---- chart ---- */
   var FONT={family:'Arial,Helvetica,sans-serif',size:10};
   var GRID='rgba(0,0,0,0.08)';
+  var YGRID='rgba(0,0,0,0.18)';
   var TICK='#555';
   var TT={backgroundColor:'#fff',borderColor:'#ccc',borderWidth:1,titleColor:'#222',titleFont:{family:'Arial,Helvetica,sans-serif',size:11},bodyColor:'#333',bodyFont:{family:'Arial,Helvetica,sans-serif',size:11},
     callbacks:{label:function(item){
@@ -335,7 +336,7 @@ function renderProdChart(){
         y:{stacked:true,
           min:0,
           ticks:{color:TICK,font:FONT,callback:function(v){return(v/1e6).toFixed(0)+'M';}},
-          grid:{color:GRID},border:{color:'#ccc'}},
+          grid:{color:YGRID,lineWidth:1},border:{color:'#ccc'}},
         y1:{position:'right',
           min:0,max:5,
           ticks:{color:'#e3000f',font:FONT,stepSize:0.5,callback:function(v){return v.toFixed(1)+'%';}},
