@@ -275,13 +275,21 @@ function renderProdChart(){
   /* ---- aggregate imports per month ---- */
   var impAgg={};
   shellRows.forEach(function(r){impAgg[r.month]=(impAgg[r.month]||0)+r.eggs;});
-  /* ---- build series (absolute units) ---- */
+  /* ---- build series ---- */
+  var nowM=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  var actualKeys=prodKeys.filter(function(k){return k<=nowM;});
+  var lastActualM=actualKeys.length?actualKeys[actualKeys.length-1]:null;
   var labels=spine.map(fmtShort);
   var prodVals=spine.map(function(m){return prodMap[m]||null;});
   /* interpolate isolated nulls (e.g. September — no Chilehuevos bulletin) */
   for(var ii=1;ii<prodVals.length-1;ii++){if(prodVals[ii]===null&&prodVals[ii-1]!==null&&prodVals[ii+1]!==null){prodVals[ii]=Math.round((prodVals[ii-1]+prodVals[ii+1])/2);}}
+  /* split real (<=hoy) vs previsión (>hoy) */
+  var prodActual=spine.map(function(m,idx){return m<=nowM?prodVals[idx]:null;});
+  var prodForecast=spine.map(function(m,idx){return m>nowM?prodVals[idx]:null;});
+  var hasForecast=prodForecast.some(function(v){return v!=null;});
   var impVals=spine.map(function(m){return impAgg[m]||null;});
   var pctVals=spine.map(function(m,idx){
+    if(m>nowM)return null;
     var p=prodVals[idx]||0,i=impAgg[m]||0;
     /* only compute % when we have real production data — otherwise the
        ratio would be 100% (import-only) and corrupt the right axis */
@@ -290,10 +298,11 @@ function renderProdChart(){
   if(!prodVals.some(function(v){return v!=null;})){box.style.display='none';return;}
   /* ---- range note ---- */
   var noteEl=document.getElementById('prod-range-note');
-  if(noteEl&&lastProdM){noteEl.textContent='Producción Chilehuevos disponible hasta '+fmtM(lastProdM)+'. Meses posteriores muestran solo importaciones (sin barra de producción).';}
+  if(noteEl){var ns='Producción real Chilehuevos hasta '+(lastActualM?fmtM(lastActualM):'—')+'.';if(hasForecast&&lastProdM)ns+=' Previsión disponible hasta '+fmtM(lastProdM)+'.';noteEl.textContent=ns;}
   /* ---- legend ---- */
   document.getElementById('prod-leg').innerHTML=
     '<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:14px;height:14px;border-radius:2px;background:#00456b;display:inline-block"></span> Producción</span>'+
+    (hasForecast?'<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:14px;height:14px;border-radius:2px;background:rgba(0,140,200,0.45);border:1px solid #4A9BC0;display:inline-block"></span> Previsión producción</span>':'')+
     '<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:14px;height:14px;border-radius:2px;background:#f58220;display:inline-block"></span> Importación</span>'+
     '<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:20px;height:2px;background:#e3000f;display:inline-block"></span> % de importados</span>';
   /* ---- chart ---- */
@@ -306,13 +315,15 @@ function renderProdChart(){
       return' '+item.dataset.label+': '+(item.raw!=null?(item.raw/1e6).toFixed(1)+' M':'—');
     }}};
   if(prodChart)prodChart.destroy();
+  var datasets=[
+    {label:'Producción',type:'bar',data:prodActual,backgroundColor:'#00456b',stack:'s',yAxisID:'y',order:2},
+    {label:'Importación',type:'bar',data:impVals,backgroundColor:'#f58220',stack:'s',yAxisID:'y',order:2},
+    {label:'% de importados',type:'line',data:pctVals,borderColor:'#e3000f',backgroundColor:'transparent',borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:.3,spanGaps:true,yAxisID:'y1',order:1}
+  ];
+  if(hasForecast)datasets.splice(1,0,{label:'Previsión producción',type:'bar',data:prodForecast,backgroundColor:'rgba(0,140,200,0.45)',borderColor:'#4A9BC0',borderWidth:1,stack:'s',yAxisID:'y',order:2});
   prodChart=new Chart(document.getElementById('prod-mc'),{
     type:'bar',
-    data:{labels:labels,datasets:[
-      {label:'Producción',type:'bar',data:prodVals,backgroundColor:'#00456b',stack:'s',yAxisID:'y',order:2},
-      {label:'Importación',type:'bar',data:impVals,backgroundColor:'#f58220',stack:'s',yAxisID:'y',order:2},
-      {label:'% de importados',type:'line',data:pctVals,borderColor:'#e3000f',backgroundColor:'transparent',borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:.3,spanGaps:true,yAxisID:'y1',order:1}
-    ]},
+    data:{labels:labels,datasets:datasets},
     options:{
       responsive:true,maintainAspectRatio:false,
       interaction:{mode:'index',intersect:false},
