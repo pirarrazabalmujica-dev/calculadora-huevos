@@ -665,8 +665,75 @@ def scrape_produccion_cl():
     NOMBRES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
                'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
 
+    _ocr_reader = [None]  # lazy singleton inside cached function
+
+    def _get_ocr_reader():
+        if _ocr_reader[0] is None:
+            try:
+                import easyocr
+                _ocr_reader[0] = easyocr.Reader(['es'], gpu=False, verbose=False)
+            except Exception:
+                pass
+        return _ocr_reader[0]
+
+    def parse_pdf_ocr(content):
+        """Fallback OCR para PDFs con tablas como imagen (Chilehuevos 2026+)."""
+        result = {}
+        try:
+            import fitz as _fitz
+            import numpy as _np
+            from PIL import Image as _PILImg
+            reader = _get_ocr_reader()
+            if reader is None:
+                return result
+            doc = _fitz.open(stream=content, filetype="pdf")
+            month_pat = re.compile(
+                r'^(ene|feb|mar|abr|may|jun|jul|ago|sept?|oct|nov|dic)[\s\-](\d{2})$',
+                re.IGNORECASE)
+            for pg_idx in range(min(3, len(doc))):
+                page = doc[pg_idx]
+                pix = page.get_pixmap(matrix=_fitz.Matrix(2.5, 2.5))
+                img = _PILImg.open(BytesIO(pix.tobytes('png')))
+                items = reader.readtext(_np.array(img), detail=1)
+                for _bbox, _text, _conf in items:
+                    if _conf < 0.5:
+                        continue
+                    clean = _text.strip().replace(' ', '-').replace('–', '-')
+                    mm = month_pat.match(clean)
+                    if not mm:
+                        continue
+                    mes_num = MES.get(mm.group(1).lower(), 0)
+                    if not mes_num:
+                        continue
+                    anio = int('20' + mm.group(2))
+                    if not (2018 <= anio <= 2035):
+                        continue
+                    lx, ly = _bbox[0][0], _bbox[0][1]
+                    # First large number strictly to the right at same row
+                    candidates = []
+                    for _b2, _t2, _c2 in items:
+                        ix, iy = _b2[0][0], _b2[0][1]
+                        if ix > lx and abs(iy - ly) < 28 and _c2 > 0.3:
+                            num_s = re.sub(r'[^0-9]', '', _t2)
+                            if len(num_s) >= 8:
+                                try:
+                                    val = int(num_s)
+                                    if 50_000_000 < val < 800_000_000:
+                                        candidates.append((ix, val))
+                                except ValueError:
+                                    pass
+                    if candidates:
+                        candidates.sort(key=lambda c: c[0])
+                        key = f"{anio}-{mes_num:02d}"
+                        if key not in result:
+                            result[key] = candidates[0][1]
+        except Exception:
+            pass
+        return result
+
     def parse_pdf(content):
-        """Extrae {YYYY-MM: total_huevos} de un boletín PDF."""
+        """Extrae {YYYY-MM: total_huevos} de un boletín PDF.
+        Intenta extracción de texto primero; si falla usa OCR."""
         result = {}
         try:
             with pdfplumber.open(BytesIO(content)) as pdf:
@@ -685,13 +752,19 @@ def scrape_produccion_cl():
                                 result[f"{anio}-{mes_num:02d}"] = total
         except Exception:
             pass
+        # Fallback: tabla en imagen → OCR (PDFs Chilehuevos 2026+)
+        if not result:
+            result = parse_pdf_ocr(content)
         return result
 
     def try_urls(year, month):
         nombre = NOMBRES[month-1]
         base = "https://www.chilehuevos.cl/storage"
         paths = [
+            # acento pre-compuesto (UTF-8 normal): Boletín
             f"{base}/boletines/Bolet%C3%ADn%20Chilehuevos%20-%20{nombre}%20{year}.pdf",
+            # acento descompuesto (i + combining accent): Boletín — usado en algunos 2026
+            f"{base}/boletines/Boleti%CC%81n%20Chilehuevos%20-%20{nombre}%20{year}.pdf",
             f"{base}/Bolet%C3%ADn%20Chilehuevos%20-%20{nombre}%20{year}.pdf",
         ]
         for url in paths:
