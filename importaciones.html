@@ -268,12 +268,9 @@ function renderProdChart(){
   var now=new Date();
   var cutoff5=(now.getFullYear()-5)+'-01';
   var allM=new Set(Object.keys(prodMap).concat(shellRows.map(function(r){return r.month;})));
-  /* limit spine to months covered by production data — import-only months
-     beyond the last production bulletin would render as invisible bars
-     (below the 280M axis minimum) and corrupt the % line */
   var prodKeys=Object.keys(prodMap).sort();
   var lastProdM=prodKeys.length?prodKeys[prodKeys.length-1]:null;
-  var spine=[...allM].sort().filter(function(m){return m>=cutoff5&&(!lastProdM||m<=lastProdM);});
+  var spine=[...allM].sort().filter(function(m){return m>=cutoff5;});
   if(spine.length>=2){var fil=[],c=spine[0],last=spine[spine.length-1];while(c<=last){fil.push(c);var sp=c.split('-'),y=parseInt(sp[0]),mo=parseInt(sp[1])+1;if(mo>12){mo=1;y++;}c=y+'-'+String(mo).padStart(2,'0');}spine=fil;}
   /* ---- aggregate imports per month ---- */
   var impAgg={};
@@ -286,12 +283,14 @@ function renderProdChart(){
   var impVals=spine.map(function(m){return impAgg[m]||null;});
   var pctVals=spine.map(function(m,idx){
     var p=prodVals[idx]||0,i=impAgg[m]||0;
-    return(p+i)>0?+((i/(p+i))*100).toFixed(3):null;
+    /* only compute % when we have real production data — otherwise the
+       ratio would be 100% (import-only) and corrupt the right axis */
+    return(p>0&&(p+i)>0)?+((i/(p+i))*100).toFixed(3):null;
   });
   if(!prodVals.some(function(v){return v!=null;})){box.style.display='none';return;}
   /* ---- range note ---- */
   var noteEl=document.getElementById('prod-range-note');
-  if(noteEl&&lastProdM){noteEl.textContent='Datos de producción Chilehuevos hasta '+fmtM(lastProdM)+'. Los meses posteriores no aparecen por falta de datos de producción.';}
+  if(noteEl&&lastProdM){noteEl.textContent='Producción Chilehuevos disponible hasta '+fmtM(lastProdM)+'. Meses posteriores muestran solo importaciones (sin barra de producción).';}
   /* ---- legend ---- */
   document.getElementById('prod-leg').innerHTML=
     '<span style="display:inline-flex;align-items:center;gap:5px;font-family:Arial,sans-serif"><span style="width:14px;height:14px;border-radius:2px;background:#00456b;display:inline-block"></span> Producción</span>'+
@@ -323,8 +322,8 @@ function renderProdChart(){
           ticks:{color:TICK,font:FONT,maxRotation:90,minRotation:90},
           grid:{color:GRID},border:{color:'#ccc'}},
         y:{stacked:true,
-          min:280000000,max:480000000,
-          ticks:{color:TICK,font:FONT,stepSize:20000000,callback:function(v){return(v/1e6).toFixed(0)+'M';}},
+          min:0,
+          ticks:{color:TICK,font:FONT,callback:function(v){return(v/1e6).toFixed(0)+'M';}},
           grid:{color:GRID},border:{color:'#ccc'}},
         y1:{position:'right',
           min:0,max:5,
