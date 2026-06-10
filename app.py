@@ -657,7 +657,7 @@ def render_precios():
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN: IMPORTACIONES
 # ══════════════════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=86400,show_spinner="🐔 Cargando producción nacional (Chilehuevos)…")
+@st.cache_data(ttl=86400, show_spinner=False)
 def scrape_produccion_cl():
     """Chilehuevos — producción mensual total de huevos Chile (boletines PDF)"""
     MES = {'ene':1,'feb':2,'mar':3,'abr':4,'may':5,'jun':6,
@@ -829,7 +829,16 @@ def render_importaciones():
 
     # Datos de producción nacional (Chilehuevos) — inyectados como variable JS
     import json as _json
-    prod_data = scrape_produccion_cl()
+    with st.status("🐔 Cargando producción nacional (Chilehuevos)…", expanded=True) as _st:
+        _st.write("📥 Descargando boletines PDF desde chilehuevos.cl…")
+        _st.write("⚙️ Extrayendo tablas de producción mensual…")
+        _st.write("ℹ️ PDFs recientes (2026) requieren OCR — la primera vez puede tardar 2–3 min.")
+        prod_data = scrape_produccion_cl()
+        _last = max(prod_data.keys()) if prod_data else "sin datos"
+        _st.update(
+            label=f"✅ Producción cargada — {len(prod_data)} meses (hasta {_last})",
+            state="complete", expanded=False
+        )
     prod_script = f'<script>var PRODUCCION_CL={_json.dumps(prod_data)};</script>'
 
     # Borrar caché antiguo si existe
