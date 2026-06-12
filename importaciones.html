@@ -322,6 +322,14 @@ function renderProdChart(){
     {label:'% de importados',type:'line',data:pctVals,borderColor:'#e3000f',backgroundColor:'transparent',borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:.3,spanGaps:true,yAxisID:'y1',order:1}
   ];
   if(hasForecast)datasets.splice(1,0,{label:'Previsión producción',type:'bar',data:prodForecast,backgroundColor:'rgba(0,140,200,0.45)',borderColor:'#4A9BC0',borderWidth:1,stack:'s',yAxisID:'y',order:2});
+  /* ---- eje Y: tope un tramo por encima del máximo apilado, escalones de 50M ---- */
+  var YSTEP=50e6;
+  var stackMax=0;
+  for(var si=0;si<spine.length;si++){
+    var sv=(prodActual[si]||0)+(prodForecast[si]||0)+(impVals[si]||0);
+    if(sv>stackMax)stackMax=sv;
+  }
+  var yMax=stackMax>0?(Math.ceil(stackMax/YSTEP)+1)*YSTEP:undefined;
   prodChart=new Chart(document.getElementById('prod-mc'),{
     type:'bar',
     data:{labels:labels,datasets:datasets},
@@ -334,8 +342,8 @@ function renderProdChart(){
           ticks:{color:TICK,font:FONT,maxRotation:90,minRotation:90},
           grid:{color:GRID},border:{color:'#ccc'}},
         y:{stacked:true,
-          min:0,
-          ticks:{color:TICK,font:FONT,callback:function(v){return(v/1e6).toFixed(0)+'M';}},
+          min:0,max:yMax,
+          ticks:{color:TICK,font:FONT,stepSize:YSTEP,callback:function(v){return(v/1e6).toFixed(0)+'M';}},
           grid:{color:YGRID,lineWidth:1},border:{color:'#ccc'}},
         y1:{position:'right',
           min:0,max:5,
