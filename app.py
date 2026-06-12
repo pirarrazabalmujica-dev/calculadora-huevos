@@ -657,9 +657,22 @@ def render_precios():
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN: IMPORTACIONES
 # ══════════════════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=86400, show_spinner=False)
-def scrape_produccion_cl():
+def scrape_produccion_cl(on_status=None):
     """Chilehuevos — producción mensual total de huevos Chile (boletines PDF)"""
+    import pickle as _pickle, time as _time
+    _cache_path = os.path.join(os.path.dirname(__file__), "_prod_cl_cache.pkl")
+    def _log(msg):
+        if on_status: on_status(msg)
+    # ── Cache manual (24 h) ────────────────────────────────────────────────────
+    if os.path.exists(_cache_path):
+        try:
+            with open(_cache_path, "rb") as _cf:
+                _cached = _pickle.load(_cf)
+            if _time.time() - _cached.get("ts", 0) < 86400:
+                _log("✅ Usando datos en caché (menos de 24 h)")
+                return _cached["data"]
+        except Exception:
+            pass
     MES = {'ene':1,'feb':2,'mar':3,'abr':4,'may':5,'jun':6,
            'jul':7,'ago':8,'sep':9,'sept':9,'oct':10,'nov':11,'dic':12}
     NOMBRES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
@@ -798,12 +811,18 @@ def scrape_produccion_cl():
             pass
         # Fallback: tabla en imagen → OCR (PDFs Chilehuevos 2026+)
         if not result:
+            _log("⚡ Texto no encontrado — usando OCR (puede tardar 1-2 min)…")
             result = parse_pdf_ocr(content)
+            if result:
+                _log(f"✅ OCR completado — {len(result)} mes(es) extraídos")
+            else:
+                _log("⚠️ OCR no encontró datos en este PDF")
         return result
 
     def try_urls(year, month):
         nombre = NOMBRES[month-1]
         base = "https://www.chilehuevos.cl/storage"
+        _log(f"🔍 Buscando PDF: {nombre} {year}…")
         paths = [
             # acento pre-compuesto (UTF-8 normal): Boletín
             f"{base}/boletines/Bolet%C3%ADn%20Chilehuevos%20-%20{nombre}%20{year}.pdf",
@@ -815,6 +834,7 @@ def scrape_produccion_cl():
             try:
                 r = requests.get(url, headers=HEADERS, timeout=15)
                 if r.status_code == 200 and len(r.content) > 10_000:
+                    _log(f"📥 PDF encontrado: {nombre} {year} — {len(r.content)//1024} KB")
                     return r.content
             except Exception:
                 pass
@@ -841,14 +861,27 @@ def scrape_produccion_cl():
     # Anclas en now, now-2, now-4 para cubrir ~5 años.
     # Buscar en ventana ±9 meses alrededor de cada ancla (no solo hacia atrás)
     # para no perderse PDFs publicados después del mes ancla.
-    for offset in [0, 1, 2, 4]:
+    _anchors = [0, 1, 2, 4]
+    for _i, offset in enumerate(_anchors):
         anchor_yr = now.year - offset
         anchor_mo = now.month
+        _log(f"📅 Bloque {_i+1}/{len(_anchors)}: buscando datos de {anchor_yr}…")
         pdf_data = fetch_pdf_near(anchor_yr, anchor_mo, window=9)
         for k, v in pdf_data.items():
             if k not in data:
                 data[k] = v
+        if pdf_data:
+            _first = min(pdf_data.keys()); _last = max(pdf_data.keys())
+            _log(f"   ↳ {len(pdf_data)} meses extraídos ({_first} → {_last})")
+        else:
+            _log(f"   ↳ Sin datos para {anchor_yr}")
 
+    _log(f"💾 Guardando caché ({len(data)} meses en total)…")
+    try:
+        with open(_cache_path, "wb") as _cf:
+            _pickle.dump({{"ts": _time.time(), "data": data}}, _cf)
+    except Exception:
+        pass
     return data
 
 def render_importaciones():
@@ -874,11 +907,31 @@ def render_importaciones():
     # Datos de producción nacional (Chilehuevos) — inyectados como variable JS
     import json as _json
     with st.status("🐔 Cargando producción nacional (Chilehuevos)…", expanded=True) as _st:
-        _st.write("📥 Descargando boletines PDF desde chilehuevos.cl…")
-        _st.write("⚙️ Extrayendo tablas de producción mensual…")
-        _st.write("ℹ️ PDFs recientes (2026) requieren OCR — la primera vez puede tardar 2–3 min.")
-        prod_data = scrape_produccion_cl()
+        _prog = st.progress(0, text="Iniciando…")
+        # Etapas esperadas: 4 bloques año + mensajes intermedios
+        # Usamos contadores simples para estimar avance
+        _step_state = {"block": 0, "total_blocks": 4}
+
+        def _on_status(msg):
+            _st.write(msg)
+            # Avanza la barra por bloque completado (cada "↳" indica fin de bloque)
+            if "↳" in msg:
+                _step_state["block"] += 1
+                pct = min(_step_state["block"] / _step_state["total_blocks"], 0.95)
+                _prog.progress(pct, text=f"Bloque {_step_state['block']}/{_step_state['total_blocks']} completado…")
+            elif "caché" in msg.lower():
+                _prog.progress(1.0, text="Datos listos desde caché")
+            elif "guardando" in msg.lower():
+                _prog.progress(0.98, text="Guardando caché…")
+            elif "ocr" in msg.lower() and "completado" in msg.lower():
+                _prog.progress(
+                    min(0.5 + _step_state["block"] / _step_state["total_blocks"] * 0.4, 0.94),
+                    text="OCR completado"
+                )
+
+        prod_data = scrape_produccion_cl(on_status=_on_status)
         _last = max(prod_data.keys()) if prod_data else "sin datos"
+        _prog.progress(1.0, text=f"Listo — {len(prod_data)} meses cargados")
         _st.update(
             label=f"✅ Producción cargada — {len(prod_data)} meses (hasta {_last})",
             state="complete", expanded=False
