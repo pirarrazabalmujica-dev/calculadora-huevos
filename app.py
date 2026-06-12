@@ -798,6 +798,12 @@ def scrape_produccion_cl(on_status=None):
                                             result[k2] = bv
                 except Exception:
                     pass
+                # Early-exit: la tabla está en la página 1; si ya hay datos,
+                # no gastamos OCR en las páginas restantes (~20-30s c/u)
+                if result:
+                    if pg_idx + 1 < n_pages:
+                        _log(f"   ⏭️ Datos hallados en página {pg_idx+1} — omito {n_pages-(pg_idx+1)} página(s) restante(s)")
+                    break
         except Exception:
             pass
         return result
