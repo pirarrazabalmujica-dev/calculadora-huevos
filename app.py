@@ -895,7 +895,7 @@ def render_importaciones():
     # Inyectar datos de producción e servir el HTML directamente
     # (el HTML incluye meta CSP que permite los scripts CDN desde el iframe)
     html_content = html_content.replace("</head>", prod_script + "</head>", 1)
-    components.html(html_content, height=900, scrolling=True)
+    components.html(html_content, height=1150, scrolling=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUTER PRINCIPAL
