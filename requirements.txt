@@ -8,3 +8,7 @@ xlrd>=2.0.1
 openpyxl>=3.1.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
+# OCR para proyecciones de produccion 2026 (PDFs Chilehuevos como imagen)
+easyocr>=1.7.0
+pymupdf>=1.23.0
+pillow>=10.0.0
