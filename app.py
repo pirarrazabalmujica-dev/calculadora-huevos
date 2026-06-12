@@ -696,18 +696,32 @@ def scrape_produccion_cl(on_status=None):
             import fitz as _fitz
             import numpy as _np
             from PIL import Image as _PILImg
+            import time as _t
             reader = _get_ocr_reader()
             if reader is None:
                 return result
             doc = _fitz.open(stream=content, filetype="pdf")
+            n_pages = min(3, len(doc))
             month_pat = re.compile(
                 r'^(ene|feb|mar|abr|may|jun|jul|ago|sept?|oct|nov|dic)[\s\-](\d{2})$',
                 re.IGNORECASE)
-            for pg_idx in range(min(3, len(doc))):
+            _ocr_page_times = []
+            for pg_idx in range(n_pages):
+                # Estimate remaining time from previous pages
+                if _ocr_page_times:
+                    avg = sum(_ocr_page_times) / len(_ocr_page_times)
+                    remaining = avg * (n_pages - pg_idx)
+                    _log(f"   🔬 OCR página {pg_idx+1}/{n_pages}… (~{remaining:.0f}s restantes)")
+                else:
+                    _log(f"   🔬 OCR página {pg_idx+1}/{n_pages}… (estimando tiempo…)")
+                _page_t0 = _t.time()
                 page = doc[pg_idx]
                 pix = page.get_pixmap(matrix=_fitz.Matrix(2.5, 2.5))
                 img = _PILImg.open(BytesIO(pix.tobytes('png')))
                 items = reader.readtext(_np.array(img), detail=1)
+                _elapsed = _t.time() - _page_t0
+                _ocr_page_times.append(_elapsed)
+                _log(f"   ✅ Página {pg_idx+1}/{n_pages} lista — {_elapsed:.0f}s — {len(items)} textos detectados")
                 for _bbox, _text, _conf in items:
                     if _conf < 0.5:
                         continue
@@ -914,20 +928,36 @@ def render_importaciones():
 
         def _on_status(msg):
             _st.write(msg)
-            # Avanza la barra por bloque completado (cada "↳" indica fin de bloque)
+            msg_l = msg.lower()
             if "↳" in msg:
                 _step_state["block"] += 1
-                pct = min(_step_state["block"] / _step_state["total_blocks"], 0.95)
+                pct = min(_step_state["block"] / _step_state["total_blocks"], 0.92)
                 _prog.progress(pct, text=f"Bloque {_step_state['block']}/{_step_state['total_blocks']} completado…")
-            elif "caché" in msg.lower():
+            elif "caché" in msg_l:
                 _prog.progress(1.0, text="Datos listos desde caché")
-            elif "guardando" in msg.lower():
+            elif "guardando" in msg_l:
                 _prog.progress(0.98, text="Guardando caché…")
-            elif "ocr" in msg.lower() and "completado" in msg.lower():
-                _prog.progress(
-                    min(0.5 + _step_state["block"] / _step_state["total_blocks"] * 0.4, 0.94),
-                    text="OCR completado"
-                )
+            elif "🔬" in msg:
+                # OCR processing a page — show block base + page fraction
+                import re as _re
+                _m = _re.search(r'(\d+)/(\d+)', msg)
+                if _m:
+                    _pg, _tot = int(_m.group(1)), int(_m.group(2))
+                    # base: current block progress; add fractional page within 15% band
+                    _base = _step_state["block"] / _step_state["total_blocks"]
+                    _band = 0.15
+                    _pct = min(_base + (_pg - 1) / _tot * _band + 0.02, 0.94)
+                    _prog.progress(_pct, text=f"OCR página {_pg}/{_tot}…")
+            elif "✅" in msg and "página" in msg_l:
+                # Page finished — advance to that page's completion
+                import re as _re
+                _m = _re.search(r'(\d+)/(\d+)', msg)
+                if _m:
+                    _pg, _tot = int(_m.group(1)), int(_m.group(2))
+                    _base = _step_state["block"] / _step_state["total_blocks"]
+                    _band = 0.15
+                    _pct = min(_base + _pg / _tot * _band, 0.94)
+                    _prog.progress(_pct, text=f"OCR página {_pg}/{_tot} lista")
 
         prod_data = scrape_produccion_cl(on_status=_on_status)
         _last = max(prod_data.keys()) if prod_data else "sin datos"
