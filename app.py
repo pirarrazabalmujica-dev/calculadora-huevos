@@ -173,8 +173,8 @@ def _brasil_proconsp(on_status=None):
             tipo="anual" if is_anual else f"{data_year}-{data_month:02d}"
             _log(f"📄 PDF {pdf_n} de ~{total}: `{filename}` ({tipo}) — descargando…")
             r2=requests.get(pdf_url, headers=HEADERS, timeout=12)
-            if r2.status_code!=200 or len(r2.content)<5000:
-                _log(f"⚠️ `{filename}` no disponible (HTTP {r2.status_code})")
+            if r2.status_code!=200 or len(r2.content)<5000 or r2.content[:4]!=b'%PDF':
+                _log(f"⚠️ `{filename}` no disponible (HTTP {r2.status_code}, {'no es PDF' if r2.content[:4]!=b'%PDF' else 'muy pequeno'})")
                 continue
             kb=len(r2.content)//1024
             _log(f"🔎 `{filename}` ({kb} KB) — parseando…")
