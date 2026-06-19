@@ -3,4 +3,5 @@ __pycache__/
 
 # Archivos generados localmente en cada PC (no se versionan)
 produccion_acumulada.json
+brasil_acumulado.json
 _prod_cl_cache.pkl

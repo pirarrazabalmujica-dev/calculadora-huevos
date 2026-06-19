@@ -135,74 +135,111 @@ def _parse_anual_pdf(pdf_bytes, year):
     return records
 
 def _brasil_proconsp(on_status=None):
-    """Procon-SP — descubre PDFs via WP API, parsea Ovos Brancos dúzia — varejo SP.
+    """Procon-SP — Ovos Brancos dúzia, varejo SP. Cobertura plurianual sostenible:
+      • PDFs ANUALES (CB-Anual-NN.pdf) → 12 meses de golpe por año, baratos de
+        parsear (texto). Son la fuente de historia.
+      • PDFs MENSUALES → solo para los meses del año en curso aún sin anual.
+      • brasil_acumulado.json → la historia se acumula localmente y sobrevive si
+        Procon-SP retira PDFs viejos o si el sitio se cae.
     on_status(msg): callback opcional para reportar progreso a la UI.
     """
     def _log(msg):
         if on_status: on_status(msg)
 
+    # Base acumulada (la historia pasada no cambia)
+    import json as _json
+    accum_path = os.path.join(os.path.dirname(__file__), "brasil_acumulado.json")
+    data = {}   # {YYYY-MM: precio_brl_por_huevo}
+    try:
+        with open(accum_path, "r", encoding="utf-8") as _f:
+            data = {k: float(v) for k, v in _json.load(_f).items()}
+        if data:
+            _log(f"📚 Brasil histórico: {len(data)} meses en disco")
+    except Exception:
+        pass
+
     _log("🔍 Consultando API Procon-SP...")
     try:
         r=requests.get(
-            "https://www.procon.sp.gov.br/wp-json/wp/v2/posts?search=cesta+basica&per_page=8&orderby=date&order=desc",
-            headers=HEADERS, timeout=12)
+            "https://www.procon.sp.gov.br/wp-json/wp/v2/posts?search=cesta+basica&per_page=40&orderby=date&order=desc",
+            headers=HEADERS, timeout=15)
         posts=r.json()
         if not isinstance(posts,list): posts=[]
     except: posts=[]; _log("⚠️ No se pudo conectar con Procon-SP")
 
-    records=[]; seen_pdfs=set(); monthly_found=0; pdf_n=0
-    MAX_MONTHLY=6
-    total=len(posts)
-
-    for i, post in enumerate(posts):
-        if monthly_found >= MAX_MONTHLY:
-            break
+    # Descubrir PDFs: separar anuales (por nombre) de mensuales
+    annuals={}        # año -> url
+    monthlies=[]      # (año, mes, url, filename)
+    for post in posts:
         try:
             pub_date=pd.Timestamp(post["date"][:10])
             data_date=pub_date-pd.DateOffset(months=1)
-            data_year=int(data_date.year); data_month=int(data_date.month)
             content=post.get("content",{}).get("rendered","")
-            pdf_urls=re.findall(r'https://[^"<>\s]+\.pdf',content)
-            cb_pdfs=[u for u in pdf_urls if re.search(r'/CB[-_]|/CB[a-zA-Z]',u)
-                     and not any(x in u.lower() for x in ['arroz','planilha','pesquisa','coleta'])
-                     and u not in seen_pdfs]
-            if not cb_pdfs: continue
-            pdf_url=cb_pdfs[0]; seen_pdfs.add(pdf_url); pdf_n+=1
-            filename=pdf_url.split("/")[-1]
-            is_anual=bool(re.search(r'/CB[-_]?Anual[-_]?\d{2}\.pdf', pdf_url, re.IGNORECASE))
-            tipo="anual" if is_anual else f"{data_year}-{data_month:02d}"
-            _log(f"📄 PDF {pdf_n} de ~{total}: `{filename}` ({tipo}) — descargando…")
-            r2=requests.get(pdf_url, headers=HEADERS, timeout=12)
-            if r2.status_code!=200 or len(r2.content)<5000 or r2.content[:4]!=b'%PDF':
-                _log(f"⚠️ `{filename}` no disponible (HTTP {r2.status_code}, {'no es PDF' if r2.content[:4]!=b'%PDF' else 'muy pequeno'})")
-                continue
-            kb=len(r2.content)//1024
-            _log(f"🔎 `{filename}` ({kb} KB) — parseando…")
-            if is_anual:
-                anual_year=pub_date.year-1
-                annual_records=_parse_anual_pdf(r2.content, anual_year)
-                records.extend(annual_records)
-                _log(f"✅ `{filename}` — {len(annual_records)} meses extraídos")
-                continue
-            with pdfplumber.open(BytesIO(r2.content)) as pdf:
+            for u in re.findall(r'https://[^"<>\s]+\.pdf',content):
+                if not re.search(r'/CB[-_]|/CB[a-zA-Z]',u): continue
+                if any(x in u.lower() for x in ['arroz','planilha','pesquisa','coleta']): continue
+                fn=u.split("/")[-1]
+                ma=re.search(r'Anual[-_]?(\d{2})\.pdf', fn, re.IGNORECASE)
+                if ma:
+                    annuals.setdefault(2000+int(ma.group(1)), u)
+                else:
+                    monthlies.append((int(data_date.year), int(data_date.month), u, fn))
+        except Exception:
+            continue
+
+    def _dl_pdf(url):
+        try:
+            rr=requests.get(url, headers=HEADERS, timeout=15)
+            if rr.status_code==200 and len(rr.content)>5000 and rr.content[:4]==b'%PDF':
+                return rr.content
+        except Exception:
+            pass
+        return None
+
+    # 1) Anuales: cada uno aporta un año completo (12 meses)
+    for yr, u in sorted(annuals.items(), reverse=True):
+        if all(f"{yr}-{m:02d}" in data for m in range(1,13)):
+            continue  # ya completo en el acumulado, no re-descargar
+        _log(f"📄 Anual {yr}: `{u.split('/')[-1]}` — descargando…")
+        content=_dl_pdf(u)
+        if not content:
+            _log(f"⚠️ Anual {yr} no disponible"); continue
+        for d in _parse_anual_pdf(content, yr):
+            data[d["mes"]]=d["precio_brl"]
+        _log(f"✅ Anual {yr} procesado ({sum(1 for k in data if k.startswith(str(yr)))} meses)")
+
+    # 2) Mensuales: solo meses del año en curso que aún no tengamos
+    monthlies.sort(reverse=True)
+    parsed_m=0
+    for dy, dm, u, fn in monthlies:
+        if parsed_m>=12: break
+        key=f"{dy}-{dm:02d}"
+        if key in data: continue
+        content=_dl_pdf(u)
+        if not content: continue
+        try:
+            with pdfplumber.open(BytesIO(content)) as pdf:
                 for page in pdf.pages:
-                    text=page.extract_text() or ""
-                    text=re.sub(r'(\d)\s+([,\.])',r'\1\2',text)
+                    text=re.sub(r'(\d)\s+([,\.])',r'\1\2',page.extract_text() or "")
                     m=re.search(r'Ovos\s+Brancos[^\n]*?(\d{1,3}[,\.]\d{2})\s+(\d{1,3}[,\.]\d{2})',text)
                     if m:
                         curr=float(m.group(2).replace(',','.'))
                         if 3.0<curr<100.0:
-                            records.append({"mes":f"{data_year}-{data_month:02d}",
-                                "fecha":pd.Timestamp(f"{data_year}-{data_month:02d}-01"),
-                                "precio_brl":round(curr/12,4)})
-                            monthly_found+=1
-                            _log(f"✅ `{filename}` — R$ {curr:.2f}/docena ({data_year}-{data_month:02d})")
+                            data[key]=round(curr/12,4); parsed_m+=1
+                            _log(f"✅ Mensual {key}: R$ {curr:.2f}/docena")
                             break
-        except Exception as exc:
-            _log(f"⚠️ Error en post {i+1}: {exc}")
+        except Exception:
             continue
-    _log(f"🏁 Brasil listo — {len(records)} registros")
-    return records
+
+    # 3) Persistir acumulado (historia crece sola y sobrevive caídas del sitio)
+    try:
+        with open(accum_path, "w", encoding="utf-8") as _f:
+            _json.dump({k: data[k] for k in sorted(data)}, _f, indent=0)
+    except Exception:
+        pass
+
+    _log(f"🏁 Brasil listo — {len(data)} meses ({min(data)} → {max(data)})" if data else "🏁 Brasil sin datos")
+    return [{"mes":k, "fecha":pd.Timestamp(k+"-01"), "precio_brl":data[k]} for k in sorted(data)]
 
 # Caché manual en session_state para poder mostrar progreso en la primera carga
 _BRASIL_TTL = 43200  # 12 h en segundos
