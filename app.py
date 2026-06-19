@@ -815,7 +815,11 @@ def scrape_produccion_cl(on_status=None):
                     if not (2018 <= anio <= 2035):
                         continue
                     lx, ly = _bbox[0][0], _bbox[0][1]
-                    # First large number strictly to the right at same row
+                    # Números grandes a la derecha, en la misma fila.
+                    # La tabla "POR CICLO PRODUCTIVO" trae las columnas:
+                    #   Primer ciclo | Pelecha | Repelecha | TOTAL
+                    # Queremos el TOTAL (la columna más a la derecha), NO el primer
+                    # ciclo. Por eso elegimos el candidato con mayor X, no el primero.
                     candidates = []
                     for _b2, _t2, _c2 in items:
                         ix, iy = _b2[0][0], _b2[0][1]
@@ -829,52 +833,54 @@ def scrape_produccion_cl(on_status=None):
                                 except ValueError:
                                     pass
                     if candidates:
-                        candidates.sort(key=lambda c: c[0])
                         key = f"{anio}-{mes_num:02d}"
                         if key not in result:
-                            result[key] = candidates[0][1]
-                # -- Tabla cruzada: Mes-fila x Año-columna (valores en miles) --
-                # Captura proyecciones de produccion para meses futuros del año actual
+                            result[key] = max(candidates, key=lambda c: c[0])[1]
+                # -- Tabla "ESTIMACIÓN DE PRODUCCIÓN (miles de unidades)" ----------
+                #    Grilla limpia Mes-fila x Año-columna. Es la fuente CONFIABLE de
+                #    producción (a diferencia de la tabla "por ciclo", cuyas filas se
+                #    desalinean en el OCR). Se extraen TODOS los años presentes y se
+                #    SOBREESCRIBE lo que haya leído la ruta de la tabla por-ciclo.
+                #    Los valores vienen en miles → x1000. El filtro 100M–600M descarta
+                #    la tabla de "venta de pollitas" (cuyos valores quedan > 600M).
                 try:
-                    yr_cols = [(int(_tt.strip()), (_bb[0][0]+_bb[1][0])/2)
-                               for _bb, _tt, _cc in items
-                               if _cc > 0.5 and re.match(r'^20\d{2}$', _tt.strip())]
-                    if yr_cols:
-                        latest_yr = max(x[0] for x in yr_cols)
-                        if 2021 <= latest_yr <= 2035:
-                            cx_list = list(set(x[1] for x in yr_cols if x[0] == latest_yr))
-                            MES_FULL = {'enero':1,'febrero':2,'marzo':3,'abril':4,'mayo':5,
-                                        'junio':6,'julio':7,'agosto':8,'septiembre':9,
-                                        'octubre':10,'noviembre':11,'diciembre':12}
-                            for _bb, _tt, _cc in items:
-                                if _cc < 0.4:
-                                    continue
-                                mn = _tt.strip().lower()
-                                if mn not in MES_FULL:
-                                    continue
-                                mes_num_f = MES_FULL[mn]
-                                my = (_bb[0][1] + _bb[2][1]) / 2
-                                for cx in cx_list:
-                                    bv, bdx = None, 999
-                                    for _b2, _t2, _c2 in items:
-                                        if _c2 < 0.3:
-                                            continue
-                                        y2 = (_b2[0][1] + _b2[2][1]) / 2
-                                        if abs(y2 - my) > 20:
-                                            continue
-                                        x2 = (_b2[0][0] + _b2[1][0]) / 2
-                                        dx = abs(x2 - cx)
-                                        if dx > 60:
-                                            continue
-                                        ns = re.sub(r'[^0-9]', '', _t2)
-                                        if 4 <= len(ns) <= 7 and dx < bdx:
-                                            v = int(ns) * 1000
-                                            if 100_000_000 < v < 600_000_000:
-                                                bv, bdx = v, dx
-                                    if bv is not None:
-                                        k2 = f"{latest_yr}-{mes_num_f:02d}"
-                                        if k2 not in result:
-                                            result[k2] = bv
+                    yr_cols = {}
+                    for _bb, _tt, _cc in items:
+                        if _cc > 0.5 and re.match(r'^20\d{2}$', _tt.strip()):
+                            _yr = int(_tt.strip())
+                            if 2021 <= _yr <= 2035:
+                                yr_cols.setdefault(_yr, []).append((_bb[0][0]+_bb[1][0])/2)
+                    MES_FULL = {'enero':1,'febrero':2,'marzo':3,'abril':4,'mayo':5,
+                                'junio':6,'julio':7,'agosto':8,'septiembre':9,
+                                'octubre':10,'noviembre':11,'diciembre':12}
+                    for _bb, _tt, _cc in items:
+                        if _cc < 0.4:
+                            continue
+                        mn = _tt.strip().lower()
+                        if mn not in MES_FULL:
+                            continue
+                        mes_num_f = MES_FULL[mn]
+                        my = (_bb[0][1] + _bb[2][1]) / 2
+                        for _yr, _cxs in yr_cols.items():
+                            bv, bdx = None, 999
+                            for cx in _cxs:
+                                for _b2, _t2, _c2 in items:
+                                    if _c2 < 0.3:
+                                        continue
+                                    y2 = (_b2[0][1] + _b2[2][1]) / 2
+                                    if abs(y2 - my) > 16:
+                                        continue
+                                    x2 = (_b2[0][0] + _b2[1][0]) / 2
+                                    dx = abs(x2 - cx)
+                                    if dx > 55:
+                                        continue
+                                    ns = re.sub(r'[^0-9]', '', _t2)
+                                    if 4 <= len(ns) <= 7 and dx < bdx:
+                                        v = int(ns) * 1000
+                                        if 100_000_000 < v < 600_000_000:
+                                            bv, bdx = v, dx
+                            if bv is not None:
+                                result[f"{_yr}-{mes_num_f:02d}"] = bv  # cross-table manda
                 except Exception:
                     pass
                 # Early-exit: la tabla está en la página 1; si ya hay datos,
@@ -968,13 +974,19 @@ def scrape_produccion_cl(on_status=None):
     import json as _json
     _hist_path  = os.path.join(os.path.dirname(__file__), "produccion_historica.json")
     _accum_path = os.path.join(os.path.dirname(__file__), "produccion_acumulada.json")
-    for _src in (_hist_path, _accum_path):
-        try:
-            with open(_src, "r", encoding="utf-8") as _hf:
-                for _k, _v in _json.load(_hf).items():
-                    data.setdefault(_k, int(_v))   # base primero gana; acumulada rellena
-        except Exception:
-            pass
+    _base_keys = set()   # meses de la base versionada (exactos, no se pisan con OCR)
+    try:
+        with open(_hist_path, "r", encoding="utf-8") as _hf:
+            for _k, _v in _json.load(_hf).items():
+                data[_k] = int(_v); _base_keys.add(_k)
+    except Exception:
+        pass
+    try:
+        with open(_accum_path, "r", encoding="utf-8") as _hf:
+            for _k, _v in _json.load(_hf).items():
+                data.setdefault(_k, int(_v))   # la acumulada solo rellena huecos
+    except Exception:
+        pass
     if data:
         _log(f"📚 Historia base: {len(data)} meses ({min(data)} → {max(data)})")
     else:
@@ -986,12 +998,15 @@ def scrape_produccion_cl(on_status=None):
     #    OCR de uno. La base histórica (valores exactos) tiene prioridad sobre los
     #    valores redondeados del OCR; del boletín en vivo solo se toman los meses
     #    que aún no estén en la historia (meses recientes y la previsión futura).
+    #    El boletín en vivo es la fuente más fresca: REEMPLAZA cualquier mes que no
+    #    esté en la base versionada (así una corrección del OCR pisa valores viejos
+    #    del acumulado). Nunca pisa la base exacta (_base_keys).
     _log("🔎 Buscando el boletín más reciente (meses nuevos y previsión)…")
     live = fetch_pdf_near(now.year, now.month, window=11)
     if live:
         nuevos = sorted(k for k in live if k not in data)
         for k, v in live.items():
-            if k not in data:
+            if k not in _base_keys:
                 data[k] = v
         _log(f"   ↳ Boletín en vivo: {len(live)} meses; {len(nuevos)} nuevos"
              + (f" ({', '.join(nuevos)})" if nuevos else ""))
