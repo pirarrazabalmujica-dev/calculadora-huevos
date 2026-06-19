@@ -269,16 +269,42 @@ def scrape_argentina():
         return df,None
     except Exception as e: return None,str(e)
 
+ODEPA_DATASET = "d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3"
+# Fallback fijo por si la API CKAN no responde (URLs conocidas a 2026).
+ODEPA_FALLBACK_URLS = [
+    f"https://datos.odepa.gob.cl/dataset/{ODEPA_DATASET}/resource/9f885df4-afeb-4b75-8bab-9334f79db00f/download/precio_consumidor_2026.csv",
+    f"https://datos.odepa.gob.cl/dataset/{ODEPA_DATASET}/resource/eab239c4-e338-4cde-a9e0-7c4f27826030/download/precio_consumidor_2025.csv",
+    f"https://datos.odepa.gob.cl/dataset/{ODEPA_DATASET}/resource/5f773b96-6c3a-4017-b871-6340d779ea96/download/precio_consumidor_2024.csv",
+    f"https://datos.odepa.gob.cl/dataset/{ODEPA_DATASET}/resource/1a73ae5d-f4e2-4706-b2c3-e1e05a23fcb6/download/precio_consumidor_2023.csv",
+    f"https://datos.odepa.gob.cl/dataset/{ODEPA_DATASET}/resource/e9c3f2fc-9bb7-4f5f-a529-d1d60d7a61a5/download/precio_consumidor_2022.csv",
+]
+
+def _odepa_urls(n_years=5):
+    """Descubre dinámicamente las URLs de los CSV anuales vía la API CKAN de ODEPA.
+    Toma los n_years más recientes. Así, cuando ODEPA publica un año nuevo, aparece
+    solo — sin hardcodear URLs. Si la API falla, usa el fallback fijo."""
+    try:
+        r = requests.get(
+            f"https://datos.odepa.gob.cl/api/3/action/package_show?id={ODEPA_DATASET}",
+            headers=HEADERS, timeout=15)
+        resources = r.json()["result"]["resources"]
+        yr_url = []
+        for res in resources:
+            url = res.get("url", "")
+            m = re.search(r'precio_consumidor_(\d{4})\.csv', url)
+            if m and (res.get("format", "").upper() == "CSV" or url.endswith(".csv")):
+                yr_url.append((int(m.group(1)), url))
+        if yr_url:
+            yr_url.sort(key=lambda x: x[0], reverse=True)
+            return [u for _, u in yr_url[:n_years]]
+    except Exception:
+        pass
+    return ODEPA_FALLBACK_URLS
+
 @st.cache_data(ttl=43200,show_spinner="🇨🇱 Cargando datos ODEPA Chile…")
 def scrape_chile():
-    urls=[
-        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/9f885df4-afeb-4b75-8bab-9334f79db00f/download/precio_consumidor_2026.csv",
-        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/eab239c4-e338-4cde-a9e0-7c4f27826030/download/precio_consumidor_2025.csv",
-        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/5f773b96-6c3a-4017-b871-6340d779ea96/download/precio_consumidor_2024.csv",
-        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/1a73ae5d-f4e2-4706-b2c3-e1e05a23fcb6/download/precio_consumidor_2023.csv",
-        "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/e9c3f2fc-9bb7-4f5f-a529-d1d60d7a61a5/download/precio_consumidor_2022.csv",
-    ]
-    # Descarga de los 5 CSV en paralelo (cada uno pesa 25-63 MB → secuencial es lento)
+    urls = _odepa_urls(n_years=5)
+    # Descarga de los CSV en paralelo (cada uno pesa 25-63 MB → secuencial es lento)
     def _dl(url):
         try:
             r=requests.get(url,headers=HEADERS,timeout=20)
@@ -286,7 +312,7 @@ def scrape_chile():
             return r.content
         except: return None
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=5) as _ex:
+    with ThreadPoolExecutor(max_workers=max(1,len(urls))) as _ex:
         contents=list(_ex.map(_dl,urls))
 
     df_all=[]
