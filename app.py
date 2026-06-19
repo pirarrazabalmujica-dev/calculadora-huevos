@@ -685,13 +685,17 @@ def scrape_produccion_cl(on_status=None):
     _cache_path = os.path.join(os.path.dirname(__file__), "_prod_cl_cache.pkl")
     def _log(msg):
         if on_status: on_status(msg)
-    # ── Cache manual (24 h) ────────────────────────────────────────────────────
+    # ── Cache manual (7 días) ───────────────────────────────────────────────────
+    #    Los boletines Chilehuevos se publican una vez al mes, así que no tiene
+    #    sentido rehacer el costoso OCR a diario. 7 días mantiene los datos
+    #    frescos sin pagar el OCR (~3 min) en cada apertura.
+    _CACHE_TTL = 7 * 86400
     if os.path.exists(_cache_path):
         try:
             with open(_cache_path, "rb") as _cf:
                 _cached = _pickle.load(_cf)
-            if _time.time() - _cached.get("ts", 0) < 86400:
-                _log("✅ Usando datos en caché (menos de 24 h)")
+            if _time.time() - _cached.get("ts", 0) < _CACHE_TTL:
+                _log("✅ Usando datos en caché (menos de 7 días)")
                 return _cached["data"]
         except Exception:
             pass
