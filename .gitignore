@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+
+# Archivos generados localmente en cada PC (no se versionan)
+produccion_acumulada.json
+_prod_cl_cache.pkl

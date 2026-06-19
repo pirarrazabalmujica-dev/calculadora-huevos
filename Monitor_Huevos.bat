@@ -8,9 +8,10 @@ set "WORK=%TEMP%\MHuevos"
 if not exist "%WORK%" mkdir "%WORK%"
 
 :: ── Copiar archivos desde la carpeta del BAT ────────────────────────────────
-copy /y "%~dp0app.py"             "%WORK%\app.py"             >nul
-copy /y "%~dp0importaciones.html" "%WORK%\importaciones.html" >nul
-copy /y "%~dp0requirements.txt"   "%WORK%\requirements.txt"   >nul 2>nul
+copy /y "%~dp0app.py"                   "%WORK%\app.py"                   >nul
+copy /y "%~dp0importaciones.html"       "%WORK%\importaciones.html"       >nul
+copy /y "%~dp0requirements.txt"         "%WORK%\requirements.txt"         >nul 2>nul
+copy /y "%~dp0produccion_historica.json" "%WORK%\produccion_historica.json" >nul 2>nul
 
 :: ── Verificar Python ─────────────────────────────────────────────────────────
 python --version >nul 2>&1

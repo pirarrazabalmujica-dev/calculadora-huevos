@@ -685,17 +685,14 @@ def scrape_produccion_cl(on_status=None):
     _cache_path = os.path.join(os.path.dirname(__file__), "_prod_cl_cache.pkl")
     def _log(msg):
         if on_status: on_status(msg)
-    # ── Cache manual (7 días) ───────────────────────────────────────────────────
-    #    Los boletines Chilehuevos se publican una vez al mes, así que no tiene
-    #    sentido rehacer el costoso OCR a diario. 7 días mantiene los datos
-    #    frescos sin pagar el OCR (~3 min) en cada apertura.
-    _CACHE_TTL = 7 * 86400
+    # ── Cache manual (24 h) ────────────────────────────────────────────────────
+    _CACHE_TTL = 86400
     if os.path.exists(_cache_path):
         try:
             with open(_cache_path, "rb") as _cf:
                 _cached = _pickle.load(_cf)
             if _time.time() - _cached.get("ts", 0) < _CACHE_TTL:
-                _log("✅ Usando datos en caché (menos de 7 días)")
+                _log("✅ Usando datos en caché (menos de 24 h)")
                 return _cached["data"]
         except Exception:
             pass
@@ -897,28 +894,58 @@ def scrape_produccion_cl(on_status=None):
                         return parsed
         return {}
 
-    # Anclas en now, now-2, now-4 para cubrir ~5 años.
-    # Buscar en ventana ±9 meses alrededor de cada ancla (no solo hacia atrás)
-    # para no perderse PDFs publicados después del mes ancla.
-    _anchors = [0, 1, 2, 4]
-    for _i, offset in enumerate(_anchors):
-        anchor_yr = now.year - offset
-        anchor_mo = now.month
-        _log(f"📅 Bloque {_i+1}/{len(_anchors)}: buscando datos de {anchor_yr}…")
-        pdf_data = fetch_pdf_near(anchor_yr, anchor_mo, window=9)
-        for k, v in pdf_data.items():
+    # ── 1. Historia permanente (base versionada + acumulada local) ──────────────
+    #    Los meses pasados NUNCA cambian, así que se leen de disco y no se vuelven
+    #    a descargar ni a pasar por OCR. Dos fuentes:
+    #      • produccion_historica.json  → base versionada con la app (el "piso").
+    #      • produccion_acumulada.json  → crece sola en este PC con cada mes nuevo
+    #        que captura el boletín en vivo; sobrevive a updates de la app.
+    #    La base se carga primero (valores exactos); la acumulada solo rellena los
+    #    meses que la base no tenga. Aunque el sitio se caiga, la historia queda.
+    import json as _json
+    _hist_path  = os.path.join(os.path.dirname(__file__), "produccion_historica.json")
+    _accum_path = os.path.join(os.path.dirname(__file__), "produccion_acumulada.json")
+    for _src in (_hist_path, _accum_path):
+        try:
+            with open(_src, "r", encoding="utf-8") as _hf:
+                for _k, _v in _json.load(_hf).items():
+                    data.setdefault(_k, int(_v))   # base primero gana; acumulada rellena
+        except Exception:
+            pass
+    if data:
+        _log(f"📚 Historia base: {len(data)} meses ({min(data)} → {max(data)})")
+    else:
+        _log("⚠️ Sin historia en disco — se usará solo lo descargado en vivo")
+
+    # ── 2. Último boletín en vivo: meses nuevos + previsión (OCR si es imagen) ──
+    #    Solo se baja el boletín MÁS RECIENTE. La historia ya está en el JSON, así
+    #    que no importa que los boletines nuevos sean imágenes lentas: solo se hace
+    #    OCR de uno. La base histórica (valores exactos) tiene prioridad sobre los
+    #    valores redondeados del OCR; del boletín en vivo solo se toman los meses
+    #    que aún no estén en la historia (meses recientes y la previsión futura).
+    _log("🔎 Buscando el boletín más reciente (meses nuevos y previsión)…")
+    live = fetch_pdf_near(now.year, now.month, window=11)
+    if live:
+        nuevos = sorted(k for k in live if k not in data)
+        for k, v in live.items():
             if k not in data:
                 data[k] = v
-        if pdf_data:
-            _first = min(pdf_data.keys()); _last = max(pdf_data.keys())
-            _log(f"   ↳ {len(pdf_data)} meses extraídos ({_first} → {_last})")
-        else:
-            _log(f"   ↳ Sin datos para {anchor_yr}")
+        _log(f"   ↳ Boletín en vivo: {len(live)} meses; {len(nuevos)} nuevos"
+             + (f" ({', '.join(nuevos)})" if nuevos else ""))
+    else:
+        _log("   ↳ Sin boletín reciente — se muestra solo la historia base")
 
     _log(f"💾 Guardando caché ({len(data)} meses en total)…")
     try:
         with open(_cache_path, "wb") as _cf:
-            _pickle.dump({{"ts": _time.time(), "data": data}}, _cf)
+            _pickle.dump({"ts": _time.time(), "data": data}, _cf)
+    except Exception:
+        pass
+    # Acumulado permanente: la historia crece sola mes a mes y no se vuelve a
+    # depender del OCR para meses ya capturados (no lo pisa el update de la app).
+    try:
+        with open(_accum_path, "w", encoding="utf-8") as _af:
+            _json.dump({k: data[k] for k in sorted(data)}, _af, indent=0)
     except Exception:
         pass
     return data
@@ -947,42 +974,36 @@ def render_importaciones():
     import json as _json
     with st.status("🐔 Cargando producción nacional (Chilehuevos)…", expanded=True) as _st:
         _prog = st.progress(0, text="Iniciando…")
-        # Etapas esperadas: 4 bloques año + mensajes intermedios
-        # Usamos contadores simples para estimar avance
-        _step_state = {"block": 0, "total_blocks": 4}
 
         def _on_status(msg):
+            # Flujo: historia base (rápido) → último boletín en vivo (OCR si es
+            # imagen) → guardado. El OCR es el tramo largo, así que la barra
+            # avanza página a página entre 20% y 90%.
             _st.write(msg)
+            import re as _re
             msg_l = msg.lower()
-            if "↳" in msg:
-                _step_state["block"] += 1
-                pct = min(_step_state["block"] / _step_state["total_blocks"], 0.92)
-                _prog.progress(pct, text=f"Bloque {_step_state['block']}/{_step_state['total_blocks']} completado…")
-            elif "caché" in msg_l:
+            if "caché" in msg_l:
                 _prog.progress(1.0, text="Datos listos desde caché")
+            elif "historia base" in msg_l:
+                _prog.progress(0.10, text="Historia base cargada")
+            elif "buscando el boletín" in msg_l:
+                _prog.progress(0.20, text="Buscando boletín reciente…")
+            elif "🔬" in msg:  # OCR procesando una página
+                _m = _re.search(r'(\d+)/(\d+)', msg)
+                if _m:
+                    _pg, _tot = int(_m.group(1)), int(_m.group(2))
+                    _pct = min(0.20 + (_pg - 1) / _tot * 0.70, 0.88)
+                    _prog.progress(_pct, text=f"OCR página {_pg}/{_tot}…")
+            elif "✅" in msg and "página" in msg_l:  # página OCR terminada
+                _m = _re.search(r'(\d+)/(\d+)', msg)
+                if _m:
+                    _pg, _tot = int(_m.group(1)), int(_m.group(2))
+                    _pct = min(0.20 + _pg / _tot * 0.70, 0.90)
+                    _prog.progress(_pct, text=f"OCR página {_pg}/{_tot} lista")
+            elif "↳" in msg:
+                _prog.progress(0.92, text="Boletín reciente procesado")
             elif "guardando" in msg_l:
                 _prog.progress(0.98, text="Guardando caché…")
-            elif "🔬" in msg:
-                # OCR processing a page — show block base + page fraction
-                import re as _re
-                _m = _re.search(r'(\d+)/(\d+)', msg)
-                if _m:
-                    _pg, _tot = int(_m.group(1)), int(_m.group(2))
-                    # base: current block progress; add fractional page within 15% band
-                    _base = _step_state["block"] / _step_state["total_blocks"]
-                    _band = 0.15
-                    _pct = min(_base + (_pg - 1) / _tot * _band + 0.02, 0.94)
-                    _prog.progress(_pct, text=f"OCR página {_pg}/{_tot}…")
-            elif "✅" in msg and "página" in msg_l:
-                # Page finished — advance to that page's completion
-                import re as _re
-                _m = _re.search(r'(\d+)/(\d+)', msg)
-                if _m:
-                    _pg, _tot = int(_m.group(1)), int(_m.group(2))
-                    _base = _step_state["block"] / _step_state["total_blocks"]
-                    _band = 0.15
-                    _pct = min(_base + _pg / _tot * _band, 0.94)
-                    _prog.progress(_pct, text=f"OCR página {_pg}/{_tot} lista")
 
         prod_data = scrape_produccion_cl(on_status=_on_status)
         _last = max(prod_data.keys()) if prod_data else "sin datos"
