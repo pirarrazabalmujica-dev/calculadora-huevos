@@ -278,12 +278,25 @@ def scrape_chile():
         "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/1a73ae5d-f4e2-4706-b2c3-e1e05a23fcb6/download/precio_consumidor_2023.csv",
         "https://datos.odepa.gob.cl/dataset/d4646b7f-0d2e-4567-b6fa-932b1a6bb3f3/resource/e9c3f2fc-9bb7-4f5f-a529-d1d60d7a61a5/download/precio_consumidor_2022.csv",
     ]
-    df_all=[]
-    for url in urls:
+    # Descarga de los 5 CSV en paralelo (cada uno pesa 25-63 MB → secuencial es lento)
+    def _dl(url):
         try:
             r=requests.get(url,headers=HEADERS,timeout=20)
-            if r.status_code!=200 or len(r.content)<500: continue
-            df=pd.read_csv(StringIO(r.content.decode("utf-8-sig")),sep=",",engine="python")
+            if r.status_code!=200 or len(r.content)<500: return None
+            return r.content
+        except: return None
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=5) as _ex:
+        contents=list(_ex.map(_dl,urls))
+
+    df_all=[]
+    for content in contents:
+        if content is None: continue
+        try:
+            # engine="c" parsea ~3.5x más rápido que "python" en estos CSV grandes;
+            # on_bad_lines="skip" tolera filas irregulares igual que antes
+            df=pd.read_csv(StringIO(content.decode("utf-8-sig")),sep=",",
+                           engine="c",on_bad_lines="skip")
             df.columns=[c.strip() for c in df.columns]
             df_e=df[df["Producto"].str.contains("blanco",case=False,na=False)].copy()
             df_g=df_e[df_e["Producto"].str.contains("grande",case=False,na=False)]
@@ -657,6 +670,15 @@ def render_precios():
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN: IMPORTACIONES
 # ══════════════════════════════════════════════════════════════════════════════
+@st.cache_resource(show_spinner=False)
+def _get_easyocr_reader():
+    """Carga el modelo EasyOCR una sola vez por proceso (la carga es pesada)."""
+    try:
+        import easyocr
+        return easyocr.Reader(['es'], gpu=False, verbose=False)
+    except Exception:
+        return None
+
 def scrape_produccion_cl(on_status=None):
     """Chilehuevos — producción mensual total de huevos Chile (boletines PDF)"""
     import pickle as _pickle, time as _time
@@ -678,16 +700,9 @@ def scrape_produccion_cl(on_status=None):
     NOMBRES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
                'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
 
-    _ocr_reader = [None]  # lazy singleton inside cached function
-
     def _get_ocr_reader():
-        if _ocr_reader[0] is None:
-            try:
-                import easyocr
-                _ocr_reader[0] = easyocr.Reader(['es'], gpu=False, verbose=False)
-            except Exception:
-                pass
-        return _ocr_reader[0]
+        # Reutiliza el modelo cacheado a nivel de proceso (@st.cache_resource)
+        return _get_easyocr_reader()
 
     def parse_pdf_ocr(content):
         """Fallback OCR para PDFs con tablas como imagen (Chilehuevos 2026+)."""
