@@ -37,6 +37,19 @@ Usar **Python 3.12 o 3.13** (NO 3.14: el OCR `easyocr`/`torch` no instala en 3.1
 - Publicar un update: subir `version.txt` y la línea `APP_VERSION` en `app.py`
   (mismo número), commit + push. Eso dispara el aviso de "nueva versión" en los PCs.
 
+## Regla de verificación del agente (importante)
+
+Al hacer cambios de código:
+1. Edita los archivos.
+2. **Verifica automáticamente, sin pedir confirmación:** corre
+   `python -m py_compile app.py`. Si falla, arréglalo antes de seguir.
+3. **NUNCA hagas `git commit` ni `git push` sin confirmación explícita del
+   usuario** — subir a GitHub afecta a todos. Pídela siempre.
+
+La prueba visual completa (`streamlit run`, mirar el navegador) la hace una
+persona; `py_compile` es el chequeo automático mínimo que atrapa lo que impide
+arrancar la app.
+
 ## Fuentes de datos (cada una puede romperse si el sitio oficial cambia)
 
 | Fuente | Función en `app.py` |
