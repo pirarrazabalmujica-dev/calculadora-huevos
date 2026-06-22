@@ -465,15 +465,28 @@ LAYOUT=dict(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
     margin=dict(l=10,r=10,t=40,b=10),hovermode="x unified",
     hoverlabel=dict(bgcolor="#0f1829",bordercolor="#334155",font=dict(family="JetBrains Mono,monospace",size=12)))
 
-def make_excel(df_br,df_ar,df_cl,df_us):
+def make_excel(df_br,df_ar,df_cl,df_us,conv,m_lbl):
+    """Exporta todos los países convertidos a la moneda seleccionada (m_lbl: CLP o
+    USD) usando `conv`. Una hoja por país + una hoja comparativa con todos juntos."""
     buf=BytesIO()
+    col=f"precio_{m_lbl}"
+    ndec=4 if m_lbl=="USD" else 2
+    series={}
     with pd.ExcelWriter(buf,engine="openpyxl") as w:
-        if df_br is not None and "precio_brl" in df_br.columns:
-            df_br[["mes","precio_brl"]].to_excel(w,sheet_name="Brasil_BRL_huevo",index=False)
-        if df_ar is not None and "precio_ars" in df_ar.columns:
-            df_ar[["mes","precio_ars"]].to_excel(w,sheet_name="Argentina_ARS_huevo",index=False)
-        if df_cl is not None: df_cl[["mes","precio_clp"]].to_excel(w,sheet_name="Chile_CLP_huevo",index=False)
-        if df_us is not None: df_us[["mes","precio_usd"]].to_excel(w,sheet_name="USA_USD_huevo",index=False)
+        def _hoja(df, src_col, tipo, nombre):
+            if df is None or src_col not in df.columns: return
+            d=df[["mes",src_col]].copy()
+            d[col]=d[src_col].apply(lambda v: round(conv(v,tipo),ndec) if v is not None else None)
+            d[["mes",col]].to_excel(w,sheet_name=nombre,index=False)
+            series[nombre]=d.set_index("mes")[col]
+        _hoja(df_br,"precio_brl","BRL","Brasil")
+        _hoja(df_ar,"precio_ars","ARS","Argentina")
+        _hoja(df_cl,"precio_clp","CLP","Chile")
+        _hoja(df_us,"precio_usd","USD","USA")
+        if series:
+            comp=pd.DataFrame(series).sort_index()
+            comp.index.name="mes"
+            comp.to_excel(w,sheet_name=f"Comparativo_{m_lbl}")
     return buf.getvalue()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -707,9 +720,9 @@ def render_precios():
             '🇺🇸 FRED/BLS · Grade A Large · retail con impuestos'
             '</div>',
             unsafe_allow_html=True)
-        st.download_button("📥 Descargar precios históricos (Excel)",
-            data=make_excel(df_br,df_ar,df_cl,df_us),
-            file_name=f"monitor_huevos_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        st.download_button(f"📥 Descargar precios históricos en {m_lbl} (Excel)",
+            data=make_excel(df_br,df_ar,df_cl,df_us,conv,m_lbl),
+            file_name=f"monitor_huevos_{m_lbl}_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab2:
